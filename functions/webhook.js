@@ -43,21 +43,23 @@ exports.handler = async function(event, context) {
       const summaryData = payload.data.object;
       callId = summaryData.callId;
       
-      // We need to fetch the call details to get the phone number
-      console.log('Need to fetch call details for call ID:', callId);
+      // We need to get the phone number from a separate call to fetch call details
+      // This step can be improved later with a direct API call to OpenPhone
+      // For now, use the phone number from environment variable as fallback
+      phoneNumber = process.env.OPENPHONE_NUMBER || '+18337273701';
       
-      // For now, use a fallback contact
-      phoneNumber = null;
-      
-      noteType = "Summary";
+      // Extract actual summary content
       let summaryText = '';
       if (summaryData.summary && Array.isArray(summaryData.summary)) {
-        summaryText = summaryData.summary.join('\n');
+        summaryText = summaryData.summary.map(item => `• ${item}`).join('\n');
+      } else if (typeof summaryData.summary === 'string') {
+        summaryText = summaryData.summary;
       }
       
+      noteType = "Summary";
       noteDetails = `Call Summary\n\n` +
                    `Call ID: ${callId}\n\n` +
-                   `Summary: ${summaryText}\n\n` +
+                   `Summary:\n${summaryText}\n\n` +
                    `OpenPhone Links:\n` +
                    `- Call: https://app.openphone.com/calls/${callId}`;
     }
@@ -66,18 +68,25 @@ exports.handler = async function(event, context) {
       const transcriptData = payload.data.object;
       callId = transcriptData.callId;
       
-      // We need to fetch the call details to get the phone number
-      console.log('Need to fetch call details for call ID:', callId);
+      // We need to get the phone number from a separate call to fetch call details
+      // This step can be improved later with a direct API call to OpenPhone
+      // For now, use the phone number from environment variable as fallback
+      phoneNumber = process.env.OPENPHONE_NUMBER || '+18337273701';
       
-      // For now, use a fallback contact
-      phoneNumber = null;
-      
-      noteType = "Transcript";
+      // Extract actual transcript content
       let transcriptText = '';
       if (transcriptData.dialogue && Array.isArray(transcriptData.dialogue)) {
-        transcriptText = transcriptData.dialogue.map(d => `${d.speaker}: ${d.text}`).join('\n');
+        transcriptText = transcriptData.dialogue
+          .filter(d => d && d.text && d.speaker) // Filter out undefined entries
+          .map(d => `${d.speaker || 'Speaker'}: ${d.text || ''}`)
+          .join('\n');
       }
       
+      if (!transcriptText) {
+        transcriptText = "Transcript unavailable. Please view in OpenPhone.";
+      }
+      
+      noteType = "Transcript";
       noteDetails = `Call Transcript\n\n` +
                    `Call ID: ${callId}\n` +
                    `Duration: ${transcriptData.duration || 0} seconds\n\n` +
@@ -119,33 +128,42 @@ exports.handler = async function(event, context) {
       const phoneFormats = [
         formattedPhoneNumber,
         formattedPhoneNumber.replace(/^\+1/, ''),  // Without country code
-        formattedPhoneNumber.replace(/^\+/, '')    // No plus sign
+        formattedPhoneNumber.replace(/^\+/, ''),   // No plus sign
+        formattedPhoneNumber.substring(2)          // Try removing the +1 prefix
       ];
       
       // Try each phone format
       for (const phoneFormat of phoneFormats) {
         console.log(`Trying phone format: ${phoneFormat}`);
         
-        // Search for contacts with this phone number
-        const searchResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
-          "function": "get-contacts",
-          "parameters": {
-            "login-token": apiKey, // Note: Using login-token parameter, not api-key!
-            "filter-field": "35",
-            "filter-value": phoneFormat,
-            "start-after": "0",
-            "page-size": "50"
+        try {
+          // Search for contacts with this phone number
+          const searchResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
+            "function": "get-contacts",
+            "parameters": {
+              "login-token": apiKey,
+              "filter-field": "35",
+              "filter-value": phoneFormat,
+              "start-after": "0",
+              "page-size": "50"
+            }
+          }]);
+          
+          console.log('Search response:', JSON.stringify(searchResponse.data).substring(0, 500));
+          
+          // Check if we found matching contacts
+          if (searchResponse.data[0] && 
+              searchResponse.data[0].result && 
+              searchResponse.data[0].result['contact-list'] && 
+              searchResponse.data[0].result['contact-list'].length > 0) {
+            // Use the first matching contact
+            contactId = searchResponse.data[0].result['contact-list'][0]['contact-id'];
+            console.log(`Found matching contact with ID: ${contactId}`);
+            break;
           }
-        }]);
-        
-        // Check if we found matching contacts
-        if (searchResponse.data[0].result && 
-            searchResponse.data[0].result['contact-list'] && 
-            searchResponse.data[0].result['contact-list'].length > 0) {
-          // Use the first matching contact
-          contactId = searchResponse.data[0].result['contact-list'][0]['contact-id'];
-          console.log(`Found matching contact with ID: ${contactId}`);
-          break;
+        } catch (searchError) {
+          console.error(`Error searching with format ${phoneFormat}:`, searchError.message);
+          // Continue trying other formats
         }
       }
     }
@@ -160,18 +178,26 @@ exports.handler = async function(event, context) {
     }
     
     // Create note in SalesNexus
-    console.log('Creating note in SalesNexus');
-    const noteResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
-      "function": "create-note",
-      "parameters": {
-        "login-token": apiKey, // Note: Using login-token parameter, not api-key!
-        "contact-id": contactId,
-        "details": noteDetails,
-        "type": "1"
+    console.log('Creating note in SalesNexus for contact ID:', contactId);
+    try {
+      const noteResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
+        "function": "create-note",
+        "parameters": {
+          "login-token": apiKey,
+          "contact-id": contactId,
+          "details": noteDetails,
+          "type": "1"
+        }
+      }]);
+      
+      console.log('Note creation response:', noteResponse.data);
+    } catch (noteError) {
+      console.error('Error creating note:', noteError.message);
+      if (noteError.response) {
+        console.error('Response data:', noteError.response.data);
       }
-    }]);
-    
-    console.log('Note creation response:', noteResponse.data);
+      throw noteError;
+    }
     
     // Return success response
     return {
