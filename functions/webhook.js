@@ -25,15 +25,25 @@ exports.handler = async function(event, context) {
     if (eventType === 'call.recording.completed') {
       // Handle call recordings
       const callData = payload.data.object;
+      // For outgoing calls, use the "to" number (recipient)
+      // For incoming calls, use the "from" number (caller)
       phoneNumber = callData.direction === 'incoming' ? callData.from : callData.to;
       callId = callData.id;
+      
+      // Extract the media details
+      const mediaUrl = callData.media && callData.media[0] && callData.media[0].url 
+        ? callData.media[0].url 
+        : "No recording URL available";
+      const mediaDuration = callData.media && callData.media[0] && callData.media[0].duration 
+        ? callData.media[0].duration 
+        : 0;
       
       noteType = "Recording";
       noteDetails = `Call Recording from ${phoneNumber}\n\n` +
                    `Date/Time: ${new Date(callData.createdAt).toLocaleString()}\n` +
                    `Direction: ${callData.direction === 'incoming' ? 'Inbound' : 'Outbound'}\n` +
-                   `Duration: ${callData.media[0].duration || 0} seconds\n\n` +
-                   `Recording URL: ${callData.media[0].url}\n\n` +
+                   `Duration: ${mediaDuration} seconds\n\n` +
+                   `Recording URL: ${mediaUrl}\n\n` +
                    `OpenPhone Links:\n` +
                    `- Contact: https://app.openphone.com/contacts/${phoneNumber}\n` +
                    `- Call: https://app.openphone.com/calls/${callId}`;
@@ -43,10 +53,9 @@ exports.handler = async function(event, context) {
       const summaryData = payload.data.object;
       callId = summaryData.callId;
       
-      // We need to get the phone number from a separate call to fetch call details
-      // This step can be improved later with a direct API call to OpenPhone
-      // For now, use the phone number from environment variable as fallback
-      phoneNumber = process.env.OPENPHONE_NUMBER || '+18337273701';
+      // For summaries, we need to figure out which phone number to use
+      // Since callId is the same for all three events, we can use it to look up the right contact
+      phoneNumber = process.env.DEFAULT_DESTINATION || '+18884640727';
       
       // Extract actual summary content
       let summaryText = '';
@@ -68,10 +77,8 @@ exports.handler = async function(event, context) {
       const transcriptData = payload.data.object;
       callId = transcriptData.callId;
       
-      // We need to get the phone number from a separate call to fetch call details
-      // This step can be improved later with a direct API call to OpenPhone
-      // For now, use the phone number from environment variable as fallback
-      phoneNumber = process.env.OPENPHONE_NUMBER || '+18337273701';
+      // For transcripts, we also use the same approach as summaries
+      phoneNumber = process.env.DEFAULT_DESTINATION || '+18884640727';
       
       // Extract actual transcript content
       let transcriptText = '';
@@ -102,16 +109,7 @@ exports.handler = async function(event, context) {
       };
     }
     
-    // Clean the phone number (remove non-numeric chars except leading +)
-    let formattedPhoneNumber = null;
-    if (phoneNumber) {
-      if (phoneNumber.startsWith('+')) {
-        formattedPhoneNumber = '+' + phoneNumber.substring(1).replace(/\D/g, '');
-      } else {
-        formattedPhoneNumber = phoneNumber.replace(/\D/g, '');
-      }
-      console.log(`Original phone: ${phoneNumber}, Formatted phone: ${formattedPhoneNumber}`);
-    }
+    console.log(`Original phone: ${phoneNumber}`);
     
     // Use SalesNexus API key as login token
     const apiKey = process.env.SALESNEXUS_API_KEY;
@@ -120,61 +118,22 @@ exports.handler = async function(event, context) {
     }
     console.log('API Key is set');
     
-    // Find contact ID if we have a phone number
+    // Map of phone numbers to SalesNexus contact IDs
+    const phoneToContactMap = {
+      '+18884640727': 'ebc70bdb-bda9-4ad7-91fc-eb83bd0bdea0', // Capital One
+      '+18882134286': '91ec6856-63b1-4f7f-9a16-deac42371d14'  // Amex
+    };
+    
+    // Determine which contact ID to use
     let contactId = null;
     
-    if (formattedPhoneNumber) {
-      // Try multiple phone formats for searching
-      const phoneFormats = [
-        formattedPhoneNumber,
-        formattedPhoneNumber.replace(/^\+1/, ''),  // Without country code
-        formattedPhoneNumber.replace(/^\+/, ''),   // No plus sign
-        formattedPhoneNumber.substring(2)          // Try removing the +1 prefix
-      ];
-      
-      // Try each phone format
-      for (const phoneFormat of phoneFormats) {
-        console.log(`Trying phone format: ${phoneFormat}`);
-        
-        try {
-          // Search for contacts with this phone number
-          const searchResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
-            "function": "get-contacts",
-            "parameters": {
-              "login-token": apiKey,
-              "filter-field": "35",
-              "filter-value": phoneFormat,
-              "start-after": "0",
-              "page-size": "50"
-            }
-          }]);
-          
-          console.log('Search response:', JSON.stringify(searchResponse.data).substring(0, 500));
-          
-          // Check if we found matching contacts
-          if (searchResponse.data[0] && 
-              searchResponse.data[0].result && 
-              searchResponse.data[0].result['contact-list'] && 
-              searchResponse.data[0].result['contact-list'].length > 0) {
-            // Use the first matching contact
-            contactId = searchResponse.data[0].result['contact-list'][0]['contact-id'];
-            console.log(`Found matching contact with ID: ${contactId}`);
-            break;
-          }
-        } catch (searchError) {
-          console.error(`Error searching with format ${phoneFormat}:`, searchError.message);
-          // Continue trying other formats
-        }
-      }
-    }
-    
-    // If no contact found with any phone format, use fallback
-    if (!contactId) {
+    if (phoneNumber && phoneToContactMap[phoneNumber]) {
+      contactId = phoneToContactMap[phoneNumber];
+      console.log(`Found contact ID ${contactId} for phone number ${phoneNumber}`);
+    } else {
+      // Use fallback if no mapping exists
       contactId = process.env.FALLBACK_CONTACT_ID;
-      if (!contactId) {
-        throw new Error('FALLBACK_CONTACT_ID environment variable is not set');
-      }
-      console.log(`No matching contact found. Using fallback ID: ${contactId}`);
+      console.log(`No contact mapping found for ${phoneNumber}. Using fallback: ${contactId}`);
     }
     
     // Create note in SalesNexus
