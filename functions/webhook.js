@@ -120,7 +120,7 @@ exports.handler = async function(event, context) {
     
     // Map of phone numbers to SalesNexus contact IDs
     const phoneToContactMap = {
-      '+18884640727': 'ebc70bdb-bda9-4ad7-91fc-eb83bd0bdea0', // Capital One
+      '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6', // Capital One
       '+18882134286': '91ec6856-63b1-4f7f-9a16-deac42371d14'  // Amex
     };
     
