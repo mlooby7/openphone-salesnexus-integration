@@ -158,13 +158,15 @@ async function createNote(contactId, details) {
     const apiKey = process.env.SALESNEXUS_API_KEY;
     
     // Define the note creation payload
+    // Note: SalesNexus expects a numeric type code, not a string
+    // Removing the type parameter since it's causing errors
     const notePayload = [{
       "function": "create-note",
       "parameters": {
         "login-token": apiKey,
         "contact-id": contactId,
-        "details": details,
-        "type": "call" // You might need to verify the correct type code with SalesNexus
+        "details": details
+        // Type parameter removed as it's causing data type conversion errors
       }
     }];
     
