@@ -87,15 +87,56 @@ async function findContactByPhoneNumber(phoneNumber) {
     return process.env.FALLBACK_CONTACT_ID; // Set this in your Netlify environment variables
   } catch (error) {
     console.error("Error finding contact:", error);
-    return process.env.DEFAULT_CONTACT_ID; // Fallback to default contact
+    return process.env.FALLBACK_CONTACT_ID; // Fallback to default contact
   }
 }
 
-// Function to get authentication token (if using permanent API key)
+// Function to get authentication token using email/password or API key
 async function getAuthToken() {
-  // If you're using a permanent API key, you might need to convert it to a temporary token
-  // Otherwise, return your permanent API key directly
-  return process.env.SALESNEXUS_API_KEY;
+  try {
+    // Check if we already have a valid token stored and not expired
+    // For simplicity, we're not implementing token caching in this example
+    // In production, you might want to cache the token and only refresh when needed
+    
+    // First, try to authenticate using email/password
+    if (process.env.SALESNEXUS_EMAIL && process.env.SALESNEXUS_PASSWORD) {
+      console.log("Obtaining auth token via email/password login");
+      
+      // Create login request payload
+      const loginPayload = [{
+        "function": "login",
+        "parameters": {
+          "username": process.env.SALESNEXUS_EMAIL,
+          "password": process.env.SALESNEXUS_PASSWORD
+        }
+      }];
+      
+      // Make the login request
+      const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginPayload)
+      });
+      
+      const result = await response.json();
+      
+      // Check if login was successful
+      if (result[0].token) {
+        console.log("Successfully obtained temporary auth token");
+        return result[0].token;
+      } else {
+        console.warn("Failed to get token via login, error:", JSON.stringify(result));
+      }
+    }
+    
+    // If email/password authentication failed or wasn't provided, use the API key
+    console.log("Using permanent API key for authentication");
+    return process.env.SALESNEXUS_API_KEY;
+  } catch (error) {
+    console.error("Error getting auth token:", error);
+    // Fallback to permanent API key
+    return process.env.SALESNEXUS_API_KEY;
+  }
 }
 
 // Handle OpenPhone recording webhook
