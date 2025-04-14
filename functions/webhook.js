@@ -6,31 +6,22 @@ exports.handler = async function(event, context) {
     const payload = JSON.parse(event.body);
     console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
 
-    // Extract the phone number from the webhook
-    // Make sure to get the correct field based on your OpenPhone webhook structure
-    // This might be payload.from, payload.caller, etc.
-    let phoneNumber = payload.from || payload.caller || "";
-    
-    // Format the phone number for SalesNexus search
-    // Remove any non-numeric characters and ensure it starts with country code
-    phoneNumber = phoneNumber.replace(/\D/g, "");
-    if (phoneNumber.length === 10) {
-      // Add US country code if missing
-      phoneNumber = "1" + phoneNumber;
-    }
-    
-    // Search for the contact in SalesNexus
-    const contactId = await findContactByPhoneNumber(phoneNumber);
+    // Always use the fallback contact ID for now
+    const contactId = process.env.FALLBACK_CONTACT_ID;
+    console.log("Using fallback contact ID:", contactId);
     
     // Handle different webhook event types from OpenPhone
-    if (payload.type === "recording") {
+    // Note: OpenPhone uses format like "call.recording.completed" instead of just "recording"
+    const webhookType = payload.type || "";
+    
+    if (webhookType.includes("recording")) {
       await handleRecording(payload, contactId);
-    } else if (payload.type === "summary") {
+    } else if (webhookType.includes("summary")) {
       await handleSummary(payload, contactId);
-    } else if (payload.type === "transcript") {
+    } else if (webhookType.includes("transcript")) {
       await handleTranscript(payload, contactId);
     } else {
-      console.log("Unhandled webhook type:", payload.type);
+      console.log("Unhandled webhook type:", webhookType);
       return {
         statusCode: 200,
         body: JSON.stringify({ message: "Unhandled webhook type" })
@@ -50,103 +41,20 @@ exports.handler = async function(event, context) {
   }
 };
 
-// Function to find a contact by phone number in SalesNexus
-async function findContactByPhoneNumber(phoneNumber) {
-  try {
-    // Get temporary authorization token (if using permanent API key)
-    const authToken = await getAuthToken();
-    
-    // Define the search request for SalesNexus
-    const searchPayload = [{
-      "function": "get-contacts",
-      "parameters": {
-        "login-token": authToken,
-        "filter-field": "35", // Phone number field ID
-        "filter-value": phoneNumber,
-        "page-size": "50"
-      }
-    }];
-    
-    // Make the API request to SalesNexus
-    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(searchPayload)
-    });
-    
-    const result = await response.json();
-    console.log("Contact search result:", JSON.stringify(result));
-    
-    // Check if any contacts were found
-    if (result[0].contacts && result[0].contacts.length > 0) {
-      return result[0].contacts[0].id; // Return the first matching contact's ID
-    }
-    
-    // Fallback to default contact if no match is found
-    console.log("No contact found for phone number:", phoneNumber);
-    return process.env.FALLBACK_CONTACT_ID; // Set this in your Netlify environment variables
-  } catch (error) {
-    console.error("Error finding contact:", error);
-    return process.env.FALLBACK_CONTACT_ID; // Fallback to default contact
-  }
-}
-
-// Function to get authentication token using email/password or API key
-async function getAuthToken() {
-  try {
-    // Check if we already have a valid token stored and not expired
-    // For simplicity, we're not implementing token caching in this example
-    // In production, you might want to cache the token and only refresh when needed
-    
-    // First, try to authenticate using email/password
-    if (process.env.SALESNEXUS_EMAIL && process.env.SALESNEXUS_PASSWORD) {
-      console.log("Obtaining auth token via email/password login");
-      
-      // Create login request payload
-      const loginPayload = [{
-        "function": "login",
-        "parameters": {
-          "username": process.env.SALESNEXUS_EMAIL,
-          "password": process.env.SALESNEXUS_PASSWORD
-        }
-      }];
-      
-      // Make the login request
-      const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(loginPayload)
-      });
-      
-      const result = await response.json();
-      
-      // Check if login was successful
-      if (result[0].token) {
-        console.log("Successfully obtained temporary auth token");
-        return result[0].token;
-      } else {
-        console.warn("Failed to get token via login, error:", JSON.stringify(result));
-      }
-    }
-    
-    // If email/password authentication failed or wasn't provided, use the API key
-    console.log("Using permanent API key for authentication");
-    return process.env.SALESNEXUS_API_KEY;
-  } catch (error) {
-    console.error("Error getting auth token:", error);
-    // Fallback to permanent API key
-    return process.env.SALESNEXUS_API_KEY;
-  }
-}
-
 // Handle OpenPhone recording webhook
 async function handleRecording(payload, contactId) {
   try {
-    // Extract the recording details
-    const recordingUrl = payload.recording_url || "";
-    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
-    const callDuration = payload.duration ? `${Math.round(payload.duration / 60)} minutes` : "Unknown duration";
-    const callerNumber = payload.from || "Unknown caller";
+    // Extract the recording details from the OpenPhone payload structure
+    // Adjust path based on the actual webhook structure
+    const callData = payload.data?.object || {};
+    const mediaItems = callData.media || [];
+    const recordingUrl = mediaItems.length > 0 ? mediaItems[0].url : "No recording URL available";
+    
+    const callDate = new Date(callData.createdAt || Date.now()).toLocaleString();
+    const callDuration = mediaItems.length > 0 && mediaItems[0].duration ? 
+      `${Math.round(mediaItems[0].duration / 60)} minutes` : "Unknown duration";
+    const callerNumber = callData.from || "Unknown caller";
+    const callId = callData.id || "";
     
     // Create the note details with the recording information
     const noteDetails = `
@@ -156,7 +64,7 @@ Caller: ${callerNumber}
 Duration: ${callDuration}
 Recording: ${recordingUrl}
 
-Direct link to call in OpenPhone: https://app.openphone.com/calls/${payload.call_id}
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 `;
     
     // Create the note in SalesNexus
@@ -170,16 +78,29 @@ Direct link to call in OpenPhone: https://app.openphone.com/calls/${payload.call
 // Handle OpenPhone summary webhook
 async function handleSummary(payload, contactId) {
   try {
-    // Extract the summary details
-    const summary = payload.summary || "No summary available";
-    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
-    const callId = payload.call_id || "";
+    // Extract the summary details from the OpenPhone payload structure
+    const summaryData = payload.data?.object || {};
+    const summaryPoints = summaryData.summary || [];
+    const nextSteps = summaryData.nextSteps || [];
+    
+    // Format the summary as a string
+    let formattedSummary = "No summary available";
+    if (summaryPoints.length > 0) {
+      formattedSummary = "Summary:\n- " + summaryPoints.join("\n- ");
+      
+      if (nextSteps.length > 0) {
+        formattedSummary += "\n\nNext Steps:\n- " + nextSteps.join("\n- ");
+      }
+    }
+    
+    const callDate = new Date(payload.createdAt || Date.now()).toLocaleString();
+    const callId = summaryData.callId || "";
     
     // Create the note details with the summary information
     const noteDetails = `
 OpenPhone Call Summary - ${callDate}
 ------------------------------------
-${summary}
+${formattedSummary}
 
 Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 `;
@@ -195,22 +116,23 @@ Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 // Handle OpenPhone transcript webhook
 async function handleTranscript(payload, contactId) {
   try {
-    // Extract the transcript details
-    const transcript = payload.transcript || "No transcript available";
-    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
-    const callId = payload.call_id || "";
+    // Extract the transcript details from the OpenPhone payload structure
+    const transcriptData = payload.data?.object || {};
+    const dialogueSegments = transcriptData.dialogue || [];
     
-    // Format the transcript (handle undefined values)
+    // Format the transcript
     let formattedTranscript = "No transcript content";
-    if (typeof transcript === "string") {
-      formattedTranscript = transcript;
-    } else if (Array.isArray(transcript)) {
-      // If transcript is an array of segments, format them properly
-      formattedTranscript = transcript
-        .filter(segment => segment && typeof segment.text === "string")
-        .map(segment => `${segment.speaker || "Speaker"}: ${segment.text}`)
+    if (dialogueSegments.length > 0) {
+      formattedTranscript = dialogueSegments
+        .map(segment => {
+          const speaker = segment.identifier || "Speaker";
+          return `${speaker}: ${segment.content || ""}`;
+        })
         .join("\n");
     }
+    
+    const callDate = new Date(transcriptData.createdAt || Date.now()).toLocaleString();
+    const callId = transcriptData.callId || "";
     
     // Create the note details with the transcript information
     const noteDetails = `
@@ -232,14 +154,14 @@ Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 // Function to create a note in SalesNexus
 async function createNote(contactId, details) {
   try {
-    // Get authentication token
-    const authToken = await getAuthToken();
+    // Use API key directly (no login attempt)
+    const apiKey = process.env.SALESNEXUS_API_KEY;
     
     // Define the note creation payload
     const notePayload = [{
       "function": "create-note",
       "parameters": {
-        "login-token": authToken,
+        "login-token": apiKey,
         "contact-id": contactId,
         "details": details,
         "type": "call" // You might need to verify the correct type code with SalesNexus
