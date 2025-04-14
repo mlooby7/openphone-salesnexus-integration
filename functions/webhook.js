@@ -1,180 +1,228 @@
 // functions/webhook.js
-const axios = require('axios');
 
 exports.handler = async function(event, context) {
-  console.log('Webhook function invoked');
-  
-  // Only allow POST requests
-  if (event.httpMethod !== 'POST') {
-    console.log('Received non-POST request, returning 405');
-    return { statusCode: 405, body: 'Method Not Allowed' };
-  }
-
   try {
-    // Parse the OpenPhone webhook payload
+    // Parse the webhook payload from OpenPhone
     const payload = JSON.parse(event.body);
-    console.log('Received webhook from OpenPhone:', payload);
+    console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
+
+    // Extract the phone number from the webhook
+    // Make sure to get the correct field based on your OpenPhone webhook structure
+    // This might be payload.from, payload.caller, etc.
+    let phoneNumber = payload.from || payload.caller || "";
     
-    // Get event type
-    const eventType = payload.type;
-    console.log('Event type:', eventType);
+    // Format the phone number for SalesNexus search
+    // Remove any non-numeric characters and ensure it starts with country code
+    phoneNumber = phoneNumber.replace(/\D/g, "");
+    if (phoneNumber.length === 10) {
+      // Add US country code if missing
+      phoneNumber = "1" + phoneNumber;
+    }
     
-    // Different handling based on event type
-    let phoneNumber, callId, noteType, noteDetails;
+    // Search for the contact in SalesNexus
+    const contactId = await findContactByPhoneNumber(phoneNumber);
     
-    if (eventType === 'call.recording.completed') {
-      // Handle call recordings
-      const callData = payload.data.object;
-      // For outgoing calls, use the "to" number (recipient)
-      // For incoming calls, use the "from" number (caller)
-      phoneNumber = callData.direction === 'incoming' ? callData.from : callData.to;
-      callId = callData.id;
-      
-      // Extract the media details
-      const mediaUrl = callData.media && callData.media[0] && callData.media[0].url 
-        ? callData.media[0].url 
-        : "No recording URL available";
-      const mediaDuration = callData.media && callData.media[0] && callData.media[0].duration 
-        ? callData.media[0].duration 
-        : 0;
-      
-      noteType = "Recording";
-      noteDetails = `Call Recording from ${phoneNumber}\n\n` +
-                   `Date/Time: ${new Date(callData.createdAt).toLocaleString()}\n` +
-                   `Direction: ${callData.direction === 'incoming' ? 'Inbound' : 'Outbound'}\n` +
-                   `Duration: ${mediaDuration} seconds\n\n` +
-                   `Recording URL: ${mediaUrl}\n\n` +
-                   `OpenPhone Links:\n` +
-                   `- Contact: https://app.openphone.com/contacts/${phoneNumber}\n` +
-                   `- Call: https://app.openphone.com/calls/${callId}`;
-    }
-    else if (eventType === 'call.summary.completed') {
-      // Handle call summaries
-      const summaryData = payload.data.object;
-      callId = summaryData.callId;
-      
-      // For summaries, we need to figure out which phone number to use
-      // Since callId is the same for all three events, we can use it to look up the right contact
-      phoneNumber = process.env.DEFAULT_DESTINATION || '+18884640727';
-      
-      // Extract actual summary content
-      let summaryText = '';
-      if (summaryData.summary && Array.isArray(summaryData.summary)) {
-        summaryText = summaryData.summary.map(item => `• ${item}`).join('\n');
-      } else if (typeof summaryData.summary === 'string') {
-        summaryText = summaryData.summary;
-      }
-      
-      noteType = "Summary";
-      noteDetails = `Call Summary\n\n` +
-                   `Call ID: ${callId}\n\n` +
-                   `Summary:\n${summaryText}\n\n` +
-                   `OpenPhone Links:\n` +
-                   `- Call: https://app.openphone.com/calls/${callId}`;
-    }
-    else if (eventType === 'call.transcript.completed') {
-      // Handle call transcripts
-      const transcriptData = payload.data.object;
-      callId = transcriptData.callId;
-      
-      // For transcripts, we also use the same approach as summaries
-      phoneNumber = process.env.DEFAULT_DESTINATION || '+18884640727';
-      
-      // Extract actual transcript content
-      let transcriptText = '';
-      if (transcriptData.dialogue && Array.isArray(transcriptData.dialogue)) {
-        transcriptText = transcriptData.dialogue
-          .filter(d => d && d.text && d.speaker) // Filter out undefined entries
-          .map(d => `${d.speaker || 'Speaker'}: ${d.text || ''}`)
-          .join('\n');
-      }
-      
-      if (!transcriptText) {
-        transcriptText = "Transcript unavailable. Please view in OpenPhone.";
-      }
-      
-      noteType = "Transcript";
-      noteDetails = `Call Transcript\n\n` +
-                   `Call ID: ${callId}\n` +
-                   `Duration: ${transcriptData.duration || 0} seconds\n\n` +
-                   `Transcript:\n${transcriptText}\n\n` +
-                   `OpenPhone Links:\n` +
-                   `- Call: https://app.openphone.com/calls/${callId}`;
-    }
-    else {
-      console.log('Unsupported event type:', eventType);
+    // Handle different webhook event types from OpenPhone
+    if (payload.type === "recording") {
+      await handleRecording(payload, contactId);
+    } else if (payload.type === "summary") {
+      await handleSummary(payload, contactId);
+    } else if (payload.type === "transcript") {
+      await handleTranscript(payload, contactId);
+    } else {
+      console.log("Unhandled webhook type:", payload.type);
       return {
         statusCode: 200,
-        body: JSON.stringify({ message: "Unsupported event type" })
+        body: JSON.stringify({ message: "Unhandled webhook type" })
       };
     }
     
-    console.log(`Original phone: ${phoneNumber}`);
-    
-    // Use SalesNexus API key as login token
-    const apiKey = process.env.SALESNEXUS_API_KEY;
-    if (!apiKey) {
-      throw new Error('SALESNEXUS_API_KEY environment variable is not set');
-    }
-    console.log('API Key is set');
-    
-    // Map of phone numbers to SalesNexus contact IDs
-    const phoneToContactMap = {
-      '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6', // Capital One
-      '+18882134286': '91ec6856-63b1-4f7f-9a16-deac42371d14'  // Amex
-    };
-    
-    // Determine which contact ID to use
-    let contactId = null;
-    
-    if (phoneNumber && phoneToContactMap[phoneNumber]) {
-      contactId = phoneToContactMap[phoneNumber];
-      console.log(`Found contact ID ${contactId} for phone number ${phoneNumber}`);
-    } else {
-      // Use fallback if no mapping exists
-      contactId = process.env.FALLBACK_CONTACT_ID;
-      console.log(`No contact mapping found for ${phoneNumber}. Using fallback: ${contactId}`);
-    }
-    
-    // Create note in SalesNexus
-    console.log('Creating note in SalesNexus for contact ID:', contactId);
-    try {
-      const noteResponse = await axios.post('https://logon.salesnexus.com/api/call-v1', [{
-        "function": "create-note",
-        "parameters": {
-          "login-token": apiKey,
-          "contact-id": contactId,
-          "details": noteDetails,
-          "type": "1"
-        }
-      }]);
-      
-      console.log('Note creation response:', noteResponse.data);
-    } catch (noteError) {
-      console.error('Error creating note:', noteError.message);
-      if (noteError.response) {
-        console.error('Response data:', noteError.response.data);
-      }
-      throw noteError;
-    }
-    
-    // Return success response
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        message: "Successfully processed OpenPhone webhook",
-        contactId: contactId,
-        noteType: noteType
-      })
+      body: JSON.stringify({ message: "Webhook processed successfully" })
     };
   } catch (error) {
-    console.error('Error processing webhook:', error);
+    console.error("Error processing webhook:", error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ 
-        error: "Error processing webhook",
-        details: error.message
-      })
+      body: JSON.stringify({ error: "Failed to process webhook" })
     };
   }
 };
+
+// Function to find a contact by phone number in SalesNexus
+async function findContactByPhoneNumber(phoneNumber) {
+  try {
+    // Get temporary authorization token (if using permanent API key)
+    const authToken = await getAuthToken();
+    
+    // Define the search request for SalesNexus
+    const searchPayload = [{
+      "function": "get-contacts",
+      "parameters": {
+        "login-token": authToken,
+        "filter-field": "35", // Phone number field ID
+        "filter-value": phoneNumber,
+        "page-size": "50"
+      }
+    }];
+    
+    // Make the API request to SalesNexus
+    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(searchPayload)
+    });
+    
+    const result = await response.json();
+    console.log("Contact search result:", JSON.stringify(result));
+    
+    // Check if any contacts were found
+    if (result[0].contacts && result[0].contacts.length > 0) {
+      return result[0].contacts[0].id; // Return the first matching contact's ID
+    }
+    
+    // Fallback to default contact if no match is found
+    console.log("No contact found for phone number:", phoneNumber);
+    return process.env.DEFAULT_CONTACT_ID; // Set this in your Netlify environment variables
+  } catch (error) {
+    console.error("Error finding contact:", error);
+    return process.env.DEFAULT_CONTACT_ID; // Fallback to default contact
+  }
+}
+
+// Function to get authentication token (if using permanent API key)
+async function getAuthToken() {
+  // If you're using a permanent API key, you might need to convert it to a temporary token
+  // Otherwise, return your permanent API key directly
+  return process.env.SALESNEXUS_API_KEY;
+}
+
+// Handle OpenPhone recording webhook
+async function handleRecording(payload, contactId) {
+  try {
+    // Extract the recording details
+    const recordingUrl = payload.recording_url || "";
+    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
+    const callDuration = payload.duration ? `${Math.round(payload.duration / 60)} minutes` : "Unknown duration";
+    const callerNumber = payload.from || "Unknown caller";
+    
+    // Create the note details with the recording information
+    const noteDetails = `
+OpenPhone Call Recording - ${callDate}
+-------------------------------------
+Caller: ${callerNumber}
+Duration: ${callDuration}
+Recording: ${recordingUrl}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${payload.call_id}
+`;
+    
+    // Create the note in SalesNexus
+    await createNote(contactId, noteDetails);
+  } catch (error) {
+    console.error("Error handling recording:", error);
+    throw error;
+  }
+}
+
+// Handle OpenPhone summary webhook
+async function handleSummary(payload, contactId) {
+  try {
+    // Extract the summary details
+    const summary = payload.summary || "No summary available";
+    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
+    const callId = payload.call_id || "";
+    
+    // Create the note details with the summary information
+    const noteDetails = `
+OpenPhone Call Summary - ${callDate}
+------------------------------------
+${summary}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
+`;
+    
+    // Create the note in SalesNexus
+    await createNote(contactId, noteDetails);
+  } catch (error) {
+    console.error("Error handling summary:", error);
+    throw error;
+  }
+}
+
+// Handle OpenPhone transcript webhook
+async function handleTranscript(payload, contactId) {
+  try {
+    // Extract the transcript details
+    const transcript = payload.transcript || "No transcript available";
+    const callDate = new Date(payload.timestamp || Date.now()).toLocaleString();
+    const callId = payload.call_id || "";
+    
+    // Format the transcript (handle undefined values)
+    let formattedTranscript = "No transcript content";
+    if (typeof transcript === "string") {
+      formattedTranscript = transcript;
+    } else if (Array.isArray(transcript)) {
+      // If transcript is an array of segments, format them properly
+      formattedTranscript = transcript
+        .filter(segment => segment && typeof segment.text === "string")
+        .map(segment => `${segment.speaker || "Speaker"}: ${segment.text}`)
+        .join("\n");
+    }
+    
+    // Create the note details with the transcript information
+    const noteDetails = `
+OpenPhone Call Transcript - ${callDate}
+---------------------------------------
+${formattedTranscript}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
+`;
+    
+    // Create the note in SalesNexus
+    await createNote(contactId, noteDetails);
+  } catch (error) {
+    console.error("Error handling transcript:", error);
+    throw error;
+  }
+}
+
+// Function to create a note in SalesNexus
+async function createNote(contactId, details) {
+  try {
+    // Get authentication token
+    const authToken = await getAuthToken();
+    
+    // Define the note creation payload
+    const notePayload = [{
+      "function": "create-note",
+      "parameters": {
+        "login-token": authToken,
+        "contact-id": contactId,
+        "details": details,
+        "type": "call" // You might need to verify the correct type code with SalesNexus
+      }
+    }];
+    
+    // Make the API request to SalesNexus
+    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(notePayload)
+    });
+    
+    const result = await response.json();
+    console.log("Note creation result:", JSON.stringify(result));
+    
+    // Check for any errors in the response
+    if (result[0].error) {
+      throw new Error(`SalesNexus API error: ${result[0].error}`);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error("Error creating note:", error);
+    throw error;
+  }
+}
