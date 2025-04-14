@@ -84,7 +84,7 @@ async function findContactByPhoneNumber(phoneNumber) {
     
     // Fallback to default contact if no match is found
     console.log("No contact found for phone number:", phoneNumber);
-    return process.env.DEFAULT_CONTACT_ID; // Set this in your Netlify environment variables
+    return process.env.FALLBACK_CONTACT_ID; // Set this in your Netlify environment variables
   } catch (error) {
     console.error("Error finding contact:", error);
     return process.env.DEFAULT_CONTACT_ID; // Fallback to default contact
