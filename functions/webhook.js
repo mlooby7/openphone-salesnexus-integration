@@ -6,12 +6,40 @@ exports.handler = async function(event, context) {
     const payload = JSON.parse(event.body);
     console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
 
-    // Always use the fallback contact ID for now
-    const contactId = process.env.FALLBACK_CONTACT_ID;
-    console.log("Using fallback contact ID:", contactId);
+    // Extract both phone numbers from the webhook
+    let fromNumber = "";
+    let toNumber = "";
+    if (payload.data && payload.data.object) {
+      // The "from" number is who's calling
+      fromNumber = payload.data.object.from || "";
+      
+      // The "to" number is who was called
+      toNumber = payload.data.object.to || "";
+    }
+    
+    console.log(`Call from ${fromNumber} to ${toNumber}`);
+    
+    // Determine which phone number to use for contact matching
+    // For outgoing calls (from your OpenPhone number), use the "to" number
+    // For incoming calls (to your OpenPhone number), use the "from" number
+    const direction = payload.data?.object?.direction || "outgoing";
+    const phoneNumberForLookup = direction === "outgoing" ? toNumber : fromNumber;
+    
+    // Find the contact ID based on the relevant phone number
+    let contactId = null;
+    
+    try {
+      // Try to find the contact in SalesNexus
+      contactId = await findContactByPhoneNumber(phoneNumberForLookup);
+    } catch (error) {
+      console.error("Error finding contact:", error);
+      // If there's an error, use the fallback contact
+      contactId = process.env.FALLBACK_CONTACT_ID;
+    }
+    
+    console.log(`Using contact ID: ${contactId} for phone number: ${phoneNumberForLookup}`);
     
     // Handle different webhook event types from OpenPhone
-    // Note: OpenPhone uses format like "call.recording.completed" instead of just "recording"
     const webhookType = payload.type || "";
     
     if (webhookType.includes("recording")) {
@@ -41,11 +69,91 @@ exports.handler = async function(event, context) {
   }
 };
 
+// Search for a contact by phone number in SalesNexus
+async function findContactByPhoneNumber(phoneNumber) {
+  // Clean up the phone number (remove any non-digit characters)
+  const cleanedNumber = phoneNumber.replace(/\D/g, "");
+  console.log(`Searching for contact with phone number: ${cleanedNumber}`);
+  
+  // If the phone number is empty, use the fallback contact
+  if (!cleanedNumber) {
+    console.log("No phone number to search, using fallback contact");
+    return process.env.FALLBACK_CONTACT_ID;
+  }
+  
+  try {
+    // Use API key directly
+    const apiKey = process.env.SALESNEXUS_API_KEY;
+    
+    // We'll try multiple search approaches
+    
+    // First approach: Use the SalesNexus search function
+    const searchPayload = [{
+      "function": "search",
+      "parameters": {
+        "login-token": apiKey,
+        "index": "contacts", // The index to search in
+        "value": cleanedNumber, // The value to search for
+      }
+    }];
+    
+    // Make the API request to SalesNexus
+    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(searchPayload)
+    });
+    
+    const result = await response.json();
+    console.log("Contact search result:", JSON.stringify(result));
+    
+    // Check if we found any contacts
+    if (result[0].results && result[0].results.length > 0) {
+      // Return the ID of the first matching contact
+      return result[0].results[0].id;
+    }
+    
+    // If search didn't work, try the get-contacts approach with the required start-after parameter
+    const getContactsPayload = [{
+      "function": "get-contacts",
+      "parameters": {
+        "login-token": apiKey,
+        "filter-field": "35", // Phone number field ID
+        "filter-value": cleanedNumber,
+        "start-after": "0", // Required parameter
+        "page-size": "1" // Just get the first match
+      }
+    }];
+    
+    const getContactsResponse = await fetch("https://logon.salesnexus.com/api/call-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(getContactsPayload)
+    });
+    
+    const getContactsResult = await getContactsResponse.json();
+    console.log("Get contacts result:", JSON.stringify(getContactsResult));
+    
+    // Check if we found any contacts
+    if (getContactsResult[0].contacts && getContactsResult[0].contacts.length > 0) {
+      // Return the ID of the first matching contact
+      return getContactsResult[0].contacts[0].id;
+    }
+    
+    // If we still don't have a match, use the fallback contact
+    console.log("No matching contact found, using fallback");
+    return process.env.FALLBACK_CONTACT_ID;
+  } catch (error) {
+    console.error("Error searching for contact:", error);
+    // If there's an error, use the fallback contact
+    return process.env.FALLBACK_CONTACT_ID;
+  }
+}
+
 // Handle OpenPhone recording webhook
 async function handleRecording(payload, contactId) {
   try {
     // Extract the recording details from the OpenPhone payload structure
-    // Adjust path based on the actual webhook structure
     const callData = payload.data?.object || {};
     const mediaItems = callData.media || [];
     const recordingUrl = mediaItems.length > 0 ? mediaItems[0].url : "No recording URL available";
@@ -54,13 +162,15 @@ async function handleRecording(payload, contactId) {
     const callDuration = mediaItems.length > 0 && mediaItems[0].duration ? 
       `${Math.round(mediaItems[0].duration / 60)} minutes` : "Unknown duration";
     const callerNumber = callData.from || "Unknown caller";
+    const receiverNumber = callData.to || "Unknown receiver";
     const callId = callData.id || "";
     
     // Create the note details with the recording information
     const noteDetails = `
 OpenPhone Call Recording - ${callDate}
 -------------------------------------
-Caller: ${callerNumber}
+From: ${callerNumber}
+To: ${receiverNumber}
 Duration: ${callDuration}
 Recording: ${recordingUrl}
 
@@ -154,11 +264,10 @@ Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 // Function to create a note in SalesNexus
 async function createNote(contactId, details) {
   try {
-    // Use API key directly (no login attempt)
+    // Use API key directly
     const apiKey = process.env.SALESNEXUS_API_KEY;
     
     // Define the note creation payload
-    // Note: SalesNexus expects a numeric type code, not a string
     const notePayload = [{
       "function": "create-note",
       "parameters": {
