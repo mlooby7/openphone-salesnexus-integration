@@ -6,7 +6,7 @@ exports.handler = async function(event, context) {
     const payload = JSON.parse(event.body);
     console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
 
-    // Extract both phone numbers from the webhook
+    // Extract phone numbers from the webhook
     let fromNumber = "";
     let toNumber = "";
     if (payload.data && payload.data.object) {
@@ -25,19 +25,18 @@ exports.handler = async function(event, context) {
     const direction = payload.data?.object?.direction || "outgoing";
     const phoneNumberForLookup = direction === "outgoing" ? toNumber : fromNumber;
     
-    // Find the contact ID based on the relevant phone number
-    let contactId = null;
+    console.log(`Looking for contact with phone number: ${phoneNumberForLookup}`);
     
+    // Find the contact matching this phone number
+    let contactId = null;
     try {
-      // Try to find the contact in SalesNexus
       contactId = await findContactByPhoneNumber(phoneNumberForLookup);
     } catch (error) {
       console.error("Error finding contact:", error);
-      // If there's an error, use the fallback contact
       contactId = process.env.FALLBACK_CONTACT_ID;
     }
     
-    console.log(`Using contact ID: ${contactId} for phone number: ${phoneNumberForLookup}`);
+    console.log(`Using contact ID: ${contactId}`);
     
     // Handle different webhook event types from OpenPhone
     const webhookType = payload.type || "";
@@ -69,83 +68,150 @@ exports.handler = async function(event, context) {
   }
 };
 
-// Search for a contact by phone number in SalesNexus
+// Find a contact in SalesNexus by phone number
 async function findContactByPhoneNumber(phoneNumber) {
-  // Clean up the phone number (remove any non-digit characters)
-  const cleanedNumber = phoneNumber.replace(/\D/g, "");
-  console.log(`Searching for contact with phone number: ${cleanedNumber}`);
-  
-  // If the phone number is empty, use the fallback contact
-  if (!cleanedNumber) {
-    console.log("No phone number to search, using fallback contact");
+  if (!phoneNumber) {
+    console.log("No phone number provided for lookup");
     return process.env.FALLBACK_CONTACT_ID;
   }
   
+  // Clean the phone number to ensure consistent format
+  const cleanNumber = phoneNumber.replace(/\D/g, "");
+  console.log(`Searching for contact with cleaned number: ${cleanNumber}`);
+  
   try {
-    // Use API key directly
+    // 1. Get all contacts (we'll do this in batches to handle large contact lists)
     const apiKey = process.env.SALESNEXUS_API_KEY;
+    const batchSize = 100; // Number of contacts to get per request
+    let foundContact = null;
+    let startAfter = 0;
     
-    // We'll try multiple search approaches
-    
-    // First approach: Use the SalesNexus search function
-    const searchPayload = [{
-      "function": "search",
-      "parameters": {
-        "login-token": apiKey,
-        "index": "contacts", // The index to search in
-        "value": cleanedNumber, // The value to search for
+    while (!foundContact) {
+      // Make the API request to get a batch of contacts
+      const getContactsPayload = [{
+        "function": "get-contacts",
+        "parameters": {
+          "login-token": apiKey,
+          "filter-value": "", // Empty filter to get all contacts
+          "start-after": startAfter.toString(),
+          "page-size": batchSize.toString()
+        }
+      }];
+      
+      console.log(`Fetching contacts batch starting at ${startAfter}`);
+      
+      const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(getContactsPayload)
+      });
+      
+      const result = await response.json();
+      console.log(`Got batch of contacts, success: ${result[0].result?.success || 'false'}`);
+      
+      // Check if we got any contacts back
+      if (!result[0].result || result[0].result.success !== "true" || !result[0].result["contact-list"]) {
+        console.log("No more contacts found or API error");
+        break; // Exit the loop if we've gone through all contacts or there's an error
       }
-    }];
-    
-    // Make the API request to SalesNexus
-    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(searchPayload)
-    });
-    
-    const result = await response.json();
-    console.log("Contact search result:", JSON.stringify(result));
-    
-    // Check if we found any contacts
-    if (result[0].results && result[0].results.length > 0) {
-      // Return the ID of the first matching contact
-      return result[0].results[0].id;
+      
+      // Parse the contact list
+      const contactListStr = result[0].result["contact-list"];
+      let contactList = [];
+      try {
+        contactList = JSON.parse(contactListStr);
+      } catch (e) {
+        console.error("Error parsing contact list:", e);
+        break;
+      }
+      
+      if (contactList.length === 0) {
+        console.log("No more contacts found");
+        break; // Exit the loop if we've gone through all contacts
+      }
+      
+      console.log(`Processing ${contactList.length} contacts`);
+      
+      // For each contact, get their details and check their phone numbers
+      for (const contact of contactList) {
+        const contactId = contact.id;
+        
+        // Get all the data for this contact
+        const getContactInfoPayload = [{
+          "function": "get-contact-info",
+          "parameters": {
+            "login-token": apiKey,
+            "contact-id": contactId
+          }
+        }];
+        
+        const infoResponse = await fetch("https://logon.salesnexus.com/api/call-v1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(getContactInfoPayload)
+        });
+        
+        const infoResult = await infoResponse.json();
+        
+        // Check if we got the contact info
+        if (infoResult[0].result && infoResult[0].result.success === "true" && infoResult[0].result["field-data"]) {
+          // Parse the field data
+          try {
+            const fieldDataStr = infoResult[0].result["field-data"];
+            const fieldData = JSON.parse(fieldDataStr);
+            
+            // Check all phone number fields (typical field IDs for phone numbers might be around 150, 151, 152, etc.)
+            // We'll log the field IDs and values to help identify which fields contain phone numbers
+            console.log(`Checking contact ${contactId} field data`);
+            
+            // Loop through all fields in the contact
+            for (const fieldId in fieldData) {
+              const fieldValue = fieldData[fieldId];
+              
+              // Skip empty values
+              if (!fieldValue) continue;
+              
+              // Log any field that looks like a phone number
+              if (typeof fieldValue === 'string' && fieldValue.match(/\d{10}|\d{7}|\+\d{11}|\(\d{3}\)/)) {
+                console.log(`Field ${fieldId} has possible phone value: ${fieldValue}`);
+                
+                // Clean the field value to compare with our search number
+                const cleanFieldValue = fieldValue.replace(/\D/g, "");
+                
+                // Check if this field matches our search phone number
+                if (cleanFieldValue.includes(cleanNumber) || cleanNumber.includes(cleanFieldValue)) {
+                  console.log(`Found matching contact! ID: ${contactId}`);
+                  foundContact = contactId;
+                  break; // Exit the loop once we find a match
+                }
+              }
+            }
+          } catch (e) {
+            console.error(`Error parsing field data for contact ${contactId}:`, e);
+          }
+        }
+        
+        // Exit the loop if we found a matching contact
+        if (foundContact) break;
+      }
+      
+      // Exit the loop if we found a matching contact
+      if (foundContact) break;
+      
+      // Move to the next batch of contacts
+      startAfter += batchSize;
+      
+      // Safety check to prevent infinite loops
+      if (startAfter > 1000) {
+        console.log("Reached maximum contacts to check (1000), stopping search");
+        break;
+      }
     }
     
-    // If search didn't work, try the get-contacts approach with the required start-after parameter
-    const getContactsPayload = [{
-      "function": "get-contacts",
-      "parameters": {
-        "login-token": apiKey,
-        "filter-field": "35", // Phone number field ID
-        "filter-value": cleanedNumber,
-        "start-after": "0", // Required parameter
-        "page-size": "1" // Just get the first match
-      }
-    }];
-    
-    const getContactsResponse = await fetch("https://logon.salesnexus.com/api/call-v1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(getContactsPayload)
-    });
-    
-    const getContactsResult = await getContactsResponse.json();
-    console.log("Get contacts result:", JSON.stringify(getContactsResult));
-    
-    // Check if we found any contacts
-    if (getContactsResult[0].contacts && getContactsResult[0].contacts.length > 0) {
-      // Return the ID of the first matching contact
-      return getContactsResult[0].contacts[0].id;
-    }
-    
-    // If we still don't have a match, use the fallback contact
-    console.log("No matching contact found, using fallback");
-    return process.env.FALLBACK_CONTACT_ID;
+    // Return the found contact ID or the fallback ID
+    return foundContact || process.env.FALLBACK_CONTACT_ID;
   } catch (error) {
     console.error("Error searching for contact:", error);
-    // If there's an error, use the fallback contact
     return process.env.FALLBACK_CONTACT_ID;
   }
 }
