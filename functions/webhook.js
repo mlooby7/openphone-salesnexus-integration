@@ -159,14 +159,13 @@ async function createNote(contactId, details) {
     
     // Define the note creation payload
     // Note: SalesNexus expects a numeric type code, not a string
-    // Removing the type parameter since it's causing errors
     const notePayload = [{
       "function": "create-note",
       "parameters": {
         "login-token": apiKey,
         "contact-id": contactId,
-        "details": details
-        // Type parameter removed as it's causing data type conversion errors
+        "details": details,
+        "type": 1  // Using 1 as a default numeric type code
       }
     }];
     
