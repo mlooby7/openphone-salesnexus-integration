@@ -1,43 +1,565 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
-    <meta
-      name="description"
-      content="Web site created using create-react-app"
-    />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
-    <!--
-      manifest.json provides metadata used when your web app is installed on a
-      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
-    -->
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
-    <!--
-      Notice the use of %PUBLIC_URL% in the tags above.
-      It will be replaced with the URL of the `public` folder during the build.
-      Only files inside the `public` folder can be referenced from the HTML.
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenPhone to SalesNexus Mapping</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .container {
+            max-width: 1000px;
+            margin-top: 30px;
+        }
+        .mapping-table {
+            margin-top: 30px;
+        }
+        .spinner-border {
+            display: none;
+        }
+        .loading .spinner-border {
+            display: inline-block;
+        }
+        .csv-instructions {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OpenPhone to SalesNexus Contact Mapping</h1>
+        <p class="lead">Manage phone number to email mappings for your integration</p>
 
-      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
-      work correctly both with client-side routing and a non-root public URL.
-      Learn how to configure a non-root public URL by running `npm run build`.
-    -->
-    <title>React App</title>
-  </head>
-  <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
-    <!--
-      This HTML file is a template.
-      If you open it directly in the browser, you will see an empty page.
+        <ul class="nav nav-tabs" id="myTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="import-tab" data-bs-toggle="tab" data-bs-target="#import" type="button" role="tab" aria-selected="true">CSV Import</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab" aria-selected="false">Manual Entry</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="view-tab" data-bs-toggle="tab" data-bs-target="#view" type="button" role="tab" aria-selected="false">View Mappings</button>
+            </li>
+        </ul>
 
-      You can add webfonts, meta tags, or analytics to this file.
-      The build step will place the bundled scripts into the <body> tag.
+        <div class="tab-content pt-4" id="myTabContent">
+            <!-- CSV Import Tab -->
+            <div class="tab-pane fade show active" id="import" role="tabpanel" aria-labelledby="import-tab">
+                <h3>Import Mappings from CSV</h3>
+                <div class="csv-instructions">
+                    <h5>CSV Format Guidelines:</h5>
+                    <p>Your CSV file should contain at least two columns: one for phone numbers and one for email addresses. The system will automatically detect these columns.</p>
+                    <p>Accepted column names:</p>
+                    <ul>
+                        <li><strong>Phone numbers:</strong> phone, phone number, telephone, mobile, cell, contact number</li>
+                        <li><strong>Email addresses:</strong> email, email address, e-mail, contact email</li>
+                    </ul>
+                    <p>Example:</p>
+                    <pre>Name,Phone Number,Email,Company
+John Smith,+12125551234,john@example.com,Acme Inc
+Jane Doe,+13235557890,jane@example.com,XYZ Corp</pre>
+                </div>
+                <form id="csvUploadForm" class="mt-4">
+                    <div class="mb-3">
+                        <label for="csvFile" class="form-label">Select CSV File</label>
+                        <input class="form-control" type="file" id="csvFile" accept=".csv">
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        Upload and Process
+                    </button>
+                </form>
+                <div id="csvResults" class="mt-4"></div>
+            </div>
 
-      To begin the development, run `npm start` or `yarn start`.
-      To create a production bundle, use `npm run build` or `yarn build`.
-    -->
-  </body>
+            <!-- Manual Entry Tab -->
+            <div class="tab-pane fade" id="manual" role="tabpanel" aria-labelledby="manual-tab">
+                <h3>Add or Update Mapping</h3>
+                <form id="manualEntryForm">
+                    <div class="mb-3">
+                        <label for="phoneNumber" class="form-label">Phone Number</label>
+                        <input type="tel" class="form-control" id="phoneNumber" placeholder="+12125551234" required>
+                        <div class="form-text">Enter phone number in international format (with country code)</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email Address</label>
+                        <input type="email" class="form-control" id="email" placeholder="contact@example.com" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        Save Mapping
+                    </button>
+                </form>
+                <div id="manualEntryResult" class="mt-3"></div>
+            </div>
+
+            <!-- View Mappings Tab -->
+            <div class="tab-pane fade" id="view" role="tabpanel" aria-labelledby="view-tab">
+                <h3>Existing Mappings</h3>
+                <div class="mb-3">
+                    <input type="text" class="form-control" id="searchMappings" placeholder="Search by phone number or email...">
+                </div>
+                <div class="table-responsive mapping-table">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Phone Number</th>
+                                <th>Email Address</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mappingsTableBody">
+                            <!-- Mappings will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="loadMoreContainer" class="text-center mt-3 d-none">
+                    <button id="loadMoreBtn" class="btn btn-outline-primary">Load More</button>
+                </div>
+                <div id="noMappingsMessage" class="alert alert-info d-none" role="alert">
+                    No mappings found. Import a CSV or add mappings manually to get started.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Confirmation -->
+    <div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmationModalLabel">Confirm Delete</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Are you sure you want to delete this mapping?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+
+    <script>
+        // Firebase configuration with your actual values
+        const firebaseConfig = {
+            apiKey: "AIzaSvBnBJmrvDroePf4j16BQLZaTQ18YLxwHA",
+            authDomain: "openphone-salesnexus.firebaseapp.com",
+            projectId: "openphone-salesnexus",
+            storageBucket: "openphone-salesnexus.firestorage.app",
+            messagingSenderId: "722037146150",
+            appId: "1:722037146150:web:b21c6452463a1436bdce7"
+        };
+        
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const mappingsCollection = db.collection('phoneEmailMappings');
+        
+        // Initialize anonymous auth
+        firebase.auth().signInAnonymously()
+            .then(() => {
+                console.log("Signed in anonymously");
+                loadMappings();
+            })
+            .catch((error) => {
+                console.error("Authentication error:", error);
+                showAlert("Authentication error. Please refresh the page.", "danger");
+            });
+        
+        // DOM elements
+        const csvForm = document.getElementById('csvUploadForm');
+        const csvResultsDiv = document.getElementById('csvResults');
+        const manualForm = document.getElementById('manualEntryForm');
+        const manualResultDiv = document.getElementById('manualEntryResult');
+        const mappingsTableBody = document.getElementById('mappingsTableBody');
+        const noMappingsMessage = document.getElementById('noMappingsMessage');
+        const searchInput = document.getElementById('searchMappings');
+        const loadMoreBtn = document.getElementById('loadMoreBtn');
+        const loadMoreContainer = document.getElementById('loadMoreContainer');
+        
+        // Global variables
+        let lastVisibleDoc = null;
+        const BATCH_SIZE = 25;
+        let currentDeletePhone = null;
+        
+        // Event listeners
+        csvForm.addEventListener('submit', handleCsvUpload);
+        manualForm.addEventListener('submit', handleManualEntry);
+        document.getElementById('view-tab').addEventListener('click', loadMappings);
+        searchInput.addEventListener('input', debounce(handleSearch, 300));
+        loadMoreBtn.addEventListener('click', loadMoreMappings);
+        document.getElementById('confirmDeleteBtn').addEventListener('click', confirmDelete);
+        
+        // Debounce function for search
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+        
+        // Handle CSV upload
+        function handleCsvUpload(event) {
+            event.preventDefault();
+            
+            const fileInput = document.getElementById('csvFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showAlert('Please select a CSV file', 'warning', csvResultsDiv);
+                return;
+            }
+            
+            // Show loading state
+            csvForm.classList.add('loading');
+            showAlert('Processing CSV file...', 'info', csvResultsDiv);
+            
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: async function(results) {
+                    try {
+                        const mappings = extractMappingsFromCsv(results.data);
+                        
+                        if (mappings.length === 0) {
+                            showAlert('No valid mappings found in the CSV. Please check the file format.', 'warning', csvResultsDiv);
+                            csvForm.classList.remove('loading');
+                            return;
+                        }
+                        
+                        // Save mappings to the database
+                        await saveBatchMappings(mappings);
+                        
+                        // Show success message
+                        showAlert(`Successfully processed ${mappings.length} mappings from CSV`, 'success', csvResultsDiv);
+                    } catch (error) {
+                        console.error('Error processing CSV:', error);
+                        showAlert(`Error processing CSV: ${error.message}`, 'danger', csvResultsDiv);
+                    } finally {
+                        csvForm.classList.remove('loading');
+                        fileInput.value = ''; // Reset file input
+                    }
+                },
+                error: function(error) {
+                    console.error('CSV parsing error:', error);
+                    showAlert(`CSV parsing error: ${error.message}`, 'danger', csvResultsDiv);
+                    csvForm.classList.remove('loading');
+                }
+            });
+        }
+        
+        // Extract phone number and email mappings from CSV data
+        function extractMappingsFromCsv(data) {
+            const mappings = [];
+            const phoneHeaders = ['phone', 'phone number', 'telephone', 'mobile', 'cell', 'contact number'];
+            const emailHeaders = ['email', 'email address', 'e-mail', 'contact email'];
+            
+            // Find phone and email column indices
+            const headers = Object.keys(data[0] || {}).map(h => h.toLowerCase());
+            
+            let phoneColumn = null;
+            let emailColumn = null;
+            
+            for (const header of headers) {
+                if (!phoneColumn && phoneHeaders.some(ph => header.includes(ph))) {
+                    phoneColumn = header;
+                }
+                if (!emailColumn && emailHeaders.some(eh => header.includes(eh))) {
+                    emailColumn = header;
+                }
+                if (phoneColumn && emailColumn) break;
+            }
+            
+            if (!phoneColumn || !emailColumn) {
+                throw new Error('Could not identify phone number and email columns in the CSV');
+            }
+            
+            // Extract mappings
+            for (const row of data) {
+                const phoneNumber = formatPhoneNumber(row[phoneColumn]);
+                const email = (row[emailColumn] || '').trim();
+                
+                if (phoneNumber && email && isValidEmail(email)) {
+                    mappings.push({ phoneNumber, email });
+                }
+            }
+            
+            return mappings;
+        }
+        
+        // Format phone number to E.164
+        function formatPhoneNumber(phone) {
+            if (!phone) return null;
+            
+            // Remove all non-digit characters
+            let digits = phone.replace(/\D/g, '');
+            
+            // Add country code if missing
+            if (digits.length === 10) {
+                digits = '1' + digits; // Assume US number
+            }
+            
+            // Validate length (assuming international format)
+            if (digits.length < 10 || digits.length > 15) {
+                return null;
+            }
+            
+            return '+' + digits;
+        }
+        
+        // Validate email
+        function isValidEmail(email) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailRegex.test(email);
+        }
+        
+        // Save batch of mappings to database
+        async function saveBatchMappings(mappings) {
+            const batch = db.batch();
+            
+            for (const mapping of mappings) {
+                const docRef = mappingsCollection.doc(mapping.phoneNumber);
+                batch.set(docRef, {
+                    email: mapping.email,
+                    phoneNumber: mapping.phoneNumber,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+            }
+            
+            await batch.commit();
+            return mappings.length;
+        }
+        
+        // Handle manual entry form submission
+        async function handleManualEntry(event) {
+            event.preventDefault();
+            
+            const phoneInput = document.getElementById('phoneNumber');
+            const emailInput = document.getElementById('email');
+            
+            const phoneNumber = formatPhoneNumber(phoneInput.value);
+            const email = emailInput.value.trim();
+            
+            if (!phoneNumber) {
+                showAlert('Please enter a valid phone number', 'warning', manualResultDiv);
+                return;
+            }
+            
+            if (!isValidEmail(email)) {
+                showAlert('Please enter a valid email address', 'warning', manualResultDiv);
+                return;
+            }
+            
+            // Show loading state
+            manualForm.classList.add('loading');
+            
+            try {
+                // Save to database
+                await mappingsCollection.doc(phoneNumber).set({
+                    email: email,
+                    phoneNumber: phoneNumber,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                
+                // Show success message
+                showAlert(`Mapping saved for ${phoneNumber}`, 'success', manualResultDiv);
+                
+                // Reset form
+                phoneInput.value = '';
+                emailInput.value = '';
+            } catch (error) {
+                console.error('Error saving mapping:', error);
+                showAlert(`Error saving mapping: ${error.message}`, 'danger', manualResultDiv);
+            } finally {
+                manualForm.classList.remove('loading');
+            }
+        }
+        
+        // Load mappings for the table view
+        async function loadMappings(searchTerm = '') {
+            mappingsTableBody.innerHTML = '';
+            lastVisibleDoc = null;
+            loadMoreContainer.classList.add('d-none');
+            
+            try {
+                let query = mappingsCollection.orderBy('phoneNumber');
+                
+                if (searchTerm) {
+                    // Firebase doesn't support contains queries directly,
+                    // so we'll filter client-side after fetching
+                    query = query.limit(100);  // Limit to prevent loading too much data
+                } else {
+                    query = query.limit(BATCH_SIZE);
+                }
+                
+                const snapshot = await query.get();
+                
+                if (snapshot.empty) {
+                    noMappingsMessage.classList.remove('d-none');
+                    return;
+                }
+                
+                noMappingsMessage.classList.add('d-none');
+                
+                let count = 0;
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    
+                    // If searching, filter client-side
+                    if (searchTerm && 
+                        !data.phoneNumber.includes(searchTerm) && 
+                        !data.email.includes(searchTerm)) {
+                        return;
+                    }
+                    
+                    count++;
+                    appendMappingToTable(data);
+                });
+                
+                if (!searchTerm && snapshot.docs.length >= BATCH_SIZE) {
+                    lastVisibleDoc = snapshot.docs[snapshot.docs.length - 1];
+                    loadMoreContainer.classList.remove('d-none');
+                }
+                
+                if (count === 0) {
+                    noMappingsMessage.classList.remove('d-none');
+                }
+            } catch (error) {
+                console.error('Error loading mappings:', error);
+                showAlert('Error loading mappings. Please try again.', 'danger');
+            }
+        }
+        
+        // Handle search input
+        function handleSearch() {
+            const searchTerm = searchInput.value.trim().toLowerCase();
+            loadMappings(searchTerm);
+        }
+        
+        // Load more mappings (pagination)
+        async function loadMoreMappings() {
+            if (!lastVisibleDoc) return;
+            
+            try {
+                const query = mappingsCollection
+                    .orderBy('phoneNumber')
+                    .startAfter(lastVisibleDoc)
+                    .limit(BATCH_SIZE);
+                
+                const snapshot = await query.get();
+                
+                if (snapshot.empty) {
+                    loadMoreContainer.classList.add('d-none');
+                    return;
+                }
+                
+                snapshot.forEach(doc => {
+                    appendMappingToTable(doc.data());
+                });
+                
+                lastVisibleDoc = snapshot.docs[snapshot.docs.length - 1];
+                
+                if (snapshot.docs.length < BATCH_SIZE) {
+                    loadMoreContainer.classList.add('d-none');
+                }
+            } catch (error) {
+                console.error('Error loading more mappings:', error);
+                showAlert('Error loading more mappings. Please try again.', 'danger');
+            }
+        }
+        
+        // Append a mapping to the table
+        function appendMappingToTable(data) {
+            const row = document.createElement('tr');
+            
+            row.innerHTML = `
+                <td>${data.phoneNumber}</td>
+                <td>${data.email}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger delete-btn" data-phone="${data.phoneNumber}">
+                        Delete
+                    </button>
+                </td>
+            `;
+            
+            row.querySelector('.delete-btn').addEventListener('click', (e) => {
+                const phone = e.target.getAttribute('data-phone');
+                currentDeletePhone = phone;
+                const modal = new bootstrap.Modal(document.getElementById('confirmationModal'));
+                modal.show();
+            });
+            
+            mappingsTableBody.appendChild(row);
+        }
+        
+        // Confirm delete action
+        async function confirmDelete() {
+            if (!currentDeletePhone) return;
+            
+            try {
+                await mappingsCollection.doc(currentDeletePhone).delete();
+                
+                // Close modal and reload mappings
+                const modal = bootstrap.Modal.getInstance(document.getElementById('confirmationModal'));
+                modal.hide();
+                
+                // Reload mappings table
+                loadMappings(searchInput.value.trim().toLowerCase());
+                
+                showAlert(`Mapping for ${currentDeletePhone} deleted successfully`, 'success');
+            } catch (error) {
+                console.error('Error deleting mapping:', error);
+                showAlert(`Error deleting mapping: ${error.message}`, 'danger');
+            } finally {
+                currentDeletePhone = null;
+            }
+        }
+        
+        // Show alert message
+        function showAlert(message, type, container = null) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            if (container) {
+                container.innerHTML = '';
+                container.appendChild(alertDiv);
+            } else {
+                // If no container specified, append to body
+                document.body.insertBefore(alertDiv, document.body.firstChild);
+            }
+            
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    const bsAlert = new bootstrap.Alert(alertDiv);
+                    bsAlert.close();
+                }
+            }, 5000);
+        }
+    </script>
+</body>
 </html>
