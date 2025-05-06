@@ -6,47 +6,41 @@ exports.handler = async function(event, context) {
     const payload = JSON.parse(event.body);
     console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
 
-    // Extract information about the call
+    // Extract call ID and store it for consistent handling across webhooks
     let callId = "";
-    let phoneNumbers = { from: "", to: "" };
     
     // The structure of the payload differs by webhook type
-    // Extract data based on the webhook type
     if (payload.type && payload.type.includes("recording")) {
       // Recording webhooks have the call details directly in data.object
       if (payload.data && payload.data.object) {
         callId = payload.data.object.id || "";
-        phoneNumbers.from = payload.data.object.from || "";
-        phoneNumbers.to = payload.data.object.to || "";
       }
-    } else if (payload.type && payload.type.includes("transcript")) {
-      // Transcript webhooks have the callId in data.object.callId
+    } else if (payload.type && (payload.type.includes("transcript") || payload.type.includes("summary"))) {
+      // Transcript and summary webhooks have the callId in data.object.callId
       if (payload.data && payload.data.object) {
         callId = payload.data.object.callId || "";
-        
-        // We need to store the phone numbers for later webhook events
-        // Since transcript events don't include the phone numbers
-        await storeCallDetails(callId, phoneNumbers);
       }
-    } else if (payload.type && payload.type.includes("summary")) {
-      // Summary webhooks also have the callId in data.object.callId
-      if (payload.data && payload.data.object) {
-        callId = payload.data.object.callId || "";
+    }
+    
+    // Extract phone numbers from the webhook (for recording events)
+    // For transcript and summary events, we'll use stored data
+    let phoneNumbers = { from: "", to: "" };
+    
+    if (payload.type && payload.type.includes("recording") && payload.data && payload.data.object) {
+      phoneNumbers.from = payload.data.object.from || "";
+      phoneNumbers.to = payload.data.object.to || "";
+      
+      // Store these details for later use with transcript and summary events
+      callDetailsStore[callId] = phoneNumbers;
+    } else {
+      // Try to retrieve stored phone numbers for this call
+      if (callId && callDetailsStore[callId]) {
+        phoneNumbers = callDetailsStore[callId];
       }
     }
     
     console.log(`Processing call ID: ${callId}`);
     console.log(`Phone numbers - From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
-    
-    // If we don't have phone numbers yet (transcript/summary), try to retrieve them
-    if ((!phoneNumbers.from || !phoneNumbers.to) && callId) {
-      console.log("Retrieving stored call details");
-      const storedDetails = await retrieveCallDetails(callId);
-      if (storedDetails && storedDetails.from && storedDetails.to) {
-        phoneNumbers = storedDetails;
-        console.log(`Retrieved phone numbers - From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
-      }
-    }
     
     // Determine which phone number to use for contact matching
     // For outgoing calls (from your OpenPhone number), use the "to" number
@@ -59,13 +53,29 @@ exports.handler = async function(event, context) {
     // Default to fallback contact ID
     let contactId = process.env.FALLBACK_CONTACT_ID;
     
-    // If we have a phone number to look up, try to find the contact
+    // Try to find the contact by phone number using our email mapping system
     if (lookupNumber) {
       try {
-        // Find the contact in SalesNexus
-        contactId = await findContactByPhoneNumber(lookupNumber) || process.env.FALLBACK_CONTACT_ID;
+        // Look up email by phone number
+        const email = await lookupEmailByPhoneNumber(lookupNumber);
+        
+        if (email) {
+          console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+          
+          // Now find the contact by email in SalesNexus
+          const foundContactId = await findContactByEmail(email);
+          
+          if (foundContactId) {
+            contactId = foundContactId;
+            console.log(`Found contact by email: ${contactId}`);
+          } else {
+            console.log(`No contact found for email: ${email}, using fallback`);
+          }
+        } else {
+          console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+        }
       } catch (error) {
-        console.error("Error finding contact:", error);
+        console.error("Error looking up contact:", error);
       }
     }
     
@@ -76,9 +86,6 @@ exports.handler = async function(event, context) {
     
     if (webhookType.includes("recording")) {
       await handleRecording(payload, contactId);
-      
-      // Store the call details for later webhook events
-      await storeCallDetails(callId, phoneNumbers);
     } else if (webhookType.includes("summary")) {
       await handleSummary(payload, contactId);
     } else if (webhookType.includes("transcript")) {
@@ -108,60 +115,81 @@ exports.handler = async function(event, context) {
 // In a production environment, you might want to use a database
 const callDetailsStore = {};
 
-// Store call details for later webhook events
-async function storeCallDetails(callId, phoneNumbers) {
-  if (!callId) return;
-  
-  console.log(`Storing call details for call ID: ${callId}`);
-  callDetailsStore[callId] = phoneNumbers;
-  
-  // Clean up old entries to prevent memory leaks
-  // Keep only the 100 most recent entries
-  const callIds = Object.keys(callDetailsStore);
-  if (callIds.length > 100) {
-    const oldestCallId = callIds[0];
-    delete callDetailsStore[oldestCallId];
+// Lookup email by phone number using our mapping function
+async function lookupEmailByPhoneNumber(phoneNumber) {
+  try {
+    // Format the phone number
+    const formattedPhone = formatPhoneNumber(phoneNumber);
+    
+    if (!formattedPhone) {
+      console.log("Invalid phone number format:", phoneNumber);
+      return null;
+    }
+    
+    // Call our mapping function to get the email
+    const response = await fetch(`${process.env.URL}/.netlify/functions/mapping/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phoneNumber: formattedPhone })
+    });
+    
+    if (!response.ok) {
+      if (response.status === 404) {
+        console.log(`No email mapping found for phone: ${formattedPhone}`);
+        return null;
+      }
+      throw new Error(`Error looking up email: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data.email;
+  } catch (error) {
+    console.error("Error looking up email:", error);
+    return null;
   }
 }
 
-// Retrieve stored call details
-async function retrieveCallDetails(callId) {
-  if (!callId) return null;
+// Format phone number to E.164 format
+function formatPhoneNumber(phone) {
+  if (!phone) return null;
   
-  return callDetailsStore[callId] || null;
-}
-
-// Find a contact in SalesNexus by phone number
-async function findContactByPhoneNumber(phoneNumber) {
-  if (!phoneNumber) {
-    console.log("No phone number provided for lookup");
+  // Remove all non-digit characters
+  let digits = phone.replace(/\D/g, '');
+  
+  // Add country code if missing
+  if (digits.length === 10) {
+    digits = '1' + digits; // Assume US number
+  }
+  
+  // Validate length (assuming international format)
+  if (digits.length < 10 || digits.length > 15) {
     return null;
   }
   
-  // Clean the phone number to ensure consistent format
-  // Remove non-numeric characters and ensure E.164 format
-  let cleanNumber = phoneNumber.replace(/\D/g, "");
-  
-  // If it starts with a country code, make sure it's included
-  if (cleanNumber.length === 10) {
-    cleanNumber = "1" + cleanNumber; // Add US country code if missing
-  }
-  
-  console.log(`Searching for contact with number: ${cleanNumber}`);
-  
+  return '+' + digits;
+}
+
+// Find a contact in SalesNexus by email
+async function findContactByEmail(email) {
   try {
+    if (!email) {
+      console.log("No email provided");
+      return null;
+    }
+    
+    console.log(`Searching for contact with email: ${email}`);
+    
     // Get the API key
     const apiKey = process.env.SALESNEXUS_API_KEY;
     
-    // Use the SalesNexus get-contacts API with filter-field for phone number
+    // Use the SalesNexus API to search for contacts by email
     const searchPayload = [{
       "function": "get-contacts",
       "parameters": {
         "login-token": apiKey,
-        "filter-field": "35", // Phone number field ID
-        "filter-value": cleanNumber,
-        "start-after": "0", // Required parameter
-        "page-size": "10" // Limit to 10 results
+        "filter-value": email, // Search by email
+        "start-after": "0",
+        "page-size": "10"
       }
     }];
     
@@ -181,7 +209,7 @@ async function findContactByPhoneNumber(phoneNumber) {
     if (result && result[0] && result[0].result && result[0].result.success === "true" && result[0].result["contact-list"]) {
       const contactListStr = result[0].result["contact-list"];
       
-      // SalesNexus sometimes returns the contact list as a string that needs to be parsed
+      // Parse the contact list
       let contactList = [];
       
       try {
