@@ -127,11 +127,11 @@ async function lookupEmailByPhoneNumber(phoneNumber) {
     }
     
     // Call our mapping function to get the email
-    const response = await fetch(`${process.env.URL}/.netlify/functions/mapping/lookup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phoneNumber: formattedPhone })
-    });
+const response = await fetch(`${process.env.SITE_URL}/.netlify/functions/mapping/lookup`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ phoneNumber: formattedPhone })
+});
     
     if (!response.ok) {
       if (response.status === 404) {
