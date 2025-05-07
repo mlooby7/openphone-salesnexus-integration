@@ -1,70 +1,76 @@
-# Getting Started with Create React App
+# OpenPhone to SalesNexus Integration
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This integration connects OpenPhone's call recording, transcript, and summary webhooks to SalesNexus, automatically creating notes in the appropriate contact records.
 
-## Available Scripts
+## Features
 
-In the project directory, you can run:
+- Receives webhooks from OpenPhone containing call recordings, transcripts, and summaries
+- Uses a phone number to email mapping system to find the correct contact in SalesNexus
+- Creates detailed notes in SalesNexus with recording links, summaries, and transcripts
+- Provides a web interface for managing phone number to email mappings
 
-### `npm start`
+## Setup Instructions
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### 1. Configure Firebase (for Phone-Email Mappings)
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+1. Create a new Firebase project at [console.firebase.google.com](https://console.firebase.google.com/)
+2. Set up a Firestore database
+3. Generate a Service Account key:
+   - Go to Project Settings > Service Accounts
+   - Click "Generate new private key"
+   - Save the JSON file
 
-### `npm test`
+4. Add the Firebase configuration to your Netlify environment variables:
+   - In Netlify, go to Site settings > Environment variables
+   - Add the following variables from your Firebase project:
+     - `FIREBASE_API_KEY`
+     - `FIREBASE_AUTH_DOMAIN`
+     - `FIREBASE_PROJECT_ID`
+     - `FIREBASE_STORAGE_BUCKET`
+     - `FIREBASE_MESSAGING_SENDER_ID`
+     - `FIREBASE_APP_ID`
+   - Add another environment variable called `FIREBASE_SERVICE_ACCOUNT`
+     - Paste the entire content of the service account JSON file here
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### 2. Configure SalesNexus Connection
 
-### `npm run build`
+Add these environment variables in Netlify:
+- `SALESNEXUS_API_KEY`: Your SalesNexus API key
+- `FALLBACK_CONTACT_ID`: The ID of the contact to use when no mapping is found
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### 3. Configure Webhook URL in OpenPhone
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+1. In OpenPhone, go to Settings > Integrations
+2. Add a new webhook
+3. Enter your Netlify webhook URL: `https://your-netlify-app.netlify.app/.netlify/functions/webhook`
+4. Select the following event types:
+   - Call Recording Completed
+   - Call Transcript Completed
+   - Call Summary Completed
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### 4. Set up Phone-Email Mappings
 
-### `npm run eject`
+1. Visit your mapping interface at `https://your-netlify-app.netlify.app/`
+2. Import your existing contacts via CSV
+3. Add new mappings as needed
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## How It Works
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+1. When a call ends, OpenPhone sends webhooks with the recording, transcript, and summary to your Netlify function
+2. The webhook handler extracts the phone number from the webhook
+3. It looks up the email associated with that phone number in the Firebase database
+4. It searches SalesNexus for a contact with that email
+5. It creates a note in the found contact's record with the call information
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## Maintenance Notes
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+- Once SalesNexus implements phone number search in their API, this integration can be updated to use that feature directly
+- For security purposes, consider implementing authentication on the mapping interface in production
 
-## Learn More
+## Troubleshooting
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Check the function logs in Netlify to diagnose any issues:
+1. Go to your site in Netlify
+2. Click on Functions
+3. Find the webhook or mapping function
+4. View the logs for detailed information about any errors
