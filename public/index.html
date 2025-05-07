@@ -169,6 +169,8 @@ Jane Doe,+13235557890,jane@example.com,XYZ Corp</pre>
         const db = firebase.firestore();
         const mappingsCollection = db.collection('phoneEmailMappings');
         
+        firebase.auth().settings.appVerificationDisabledForTesting = true;
+        
         // Initialize anonymous auth
         firebase.auth().signInAnonymously()
             .then(() => {
