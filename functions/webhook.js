@@ -43,18 +43,6 @@ exports.handler = async function(event, context) {
         phoneNumbers = callDetailsStore[callId];
       }
     }
-  
-    // Add this near the top of your handler function, after extracting the phone numbers
-// Check if this is a call to/from Capital One
-if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
-  // Use Capital One contact ID
-  contactId = "YOUR_CAPITAL_ONE_CONTACT_ID"; // Replace with actual ID
-  console.log("Capital One number detected, using Capital One contact ID");
-} else {
-  // Use fallback contact ID
-  contactId = process.env.FALLBACK_CONTACT_ID;
-  console.log("Using fallback contact ID");
-}  
     
     console.log(`Processing call ID: ${callId}`);
     console.log(`Phone numbers - From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
@@ -69,31 +57,40 @@ if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") 
     
     // Default to fallback contact ID
     let contactId = process.env.FALLBACK_CONTACT_ID;
-    let email = null;
     
-    // Try to find the contact by phone number using our email mapping system
-    if (lookupNumber) {
-      try {
-        // Look up email by phone number
-        email = await lookupEmailByPhoneNumber(lookupNumber);
-        
-        if (email) {
-          console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+    // Check if this is a call to/from Capital One
+    if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
+      // Use Capital One contact ID
+      contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Replace with actual ID
+      console.log("Capital One number detected, using Capital One contact ID");
+    } else {
+      // If not Capital One, proceed with regular lookup
+      let email = null;
+      
+      // Try to find the contact by phone number using our email mapping system
+      if (lookupNumber) {
+        try {
+          // Look up email by phone number
+          email = await lookupEmailByPhoneNumber(lookupNumber);
           
-          // Now find the contact by email in SalesNexus
-          const foundContactId = await findContactByEmail(email);
-          
-          if (foundContactId) {
-            contactId = foundContactId;
-            console.log(`Found contact by email: ${contactId}`);
+          if (email) {
+            console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+            
+            // Now find the contact by email in SalesNexus
+            const foundContactId = await findContactByEmail(email);
+            
+            if (foundContactId) {
+              contactId = foundContactId;
+              console.log(`Found contact by email: ${contactId}`);
+            } else {
+              console.log(`No contact found for email: ${email}, using fallback`);
+            }
           } else {
-            console.log(`No contact found for email: ${email}, using fallback`);
+            console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
           }
-        } else {
-          console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+        } catch (error) {
+          console.error("Error looking up contact:", error);
         }
-      } catch (error) {
-        console.error("Error looking up contact:", error);
       }
     }
     
