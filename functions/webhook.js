@@ -65,7 +65,7 @@ exports.handler = async function(event, context) {
       if (lookupDigits.endsWith(capOneDigits) || lookupDigits.includes(capOneDigits)) {
         // This is Capital One's number, use the Capital One contact ID
         // Replace this with the actual Capital One contact ID
-        contactId = "YOUR_CAPITAL_ONE_CONTACT_ID"; // Put the Capital One contact ID here
+        contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Put the Capital One contact ID here
         console.log("Identified as Capital One call, using Capital One contact ID");
       } else {
         console.log("Using fallback contact ID for unknown number");
