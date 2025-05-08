@@ -5,6 +5,11 @@ const DIRECT_MAPPINGS = {
   '+18884640727': 'capitalone@example.com' // Replace with the actual email in SalesNexus
 };
 
+// Persistent storage for call details across invocations
+// Note: This will be reset whenever the function is redeployed
+// For production, consider using a database or serverless KV store
+const callDetailsStore = {};
+
 exports.handler = async function(event, context) {
   try {
     // Parse the webhook payload from OpenPhone
@@ -27,51 +32,56 @@ exports.handler = async function(event, context) {
       }
     }
     
+    console.log(`Processing call ID: ${callId}`);
+    
     // Extract phone numbers from the webhook (for recording events)
-    // For transcript and summary events, we'll use stored data
+    // For transcript and summary events, we'll try to retrieve from storage
     let phoneNumbers = { from: "", to: "" };
     
     if (payload.type && payload.type.includes("recording") && payload.data && payload.data.object) {
+      // For recording events, extract numbers directly from the payload
       phoneNumbers.from = payload.data.object.from || "";
       phoneNumbers.to = payload.data.object.to || "";
       
       // Store these details for later use with transcript and summary events
+      // Important: Use a key that will persist across serverless function invocations
       callDetailsStore[callId] = phoneNumbers;
+      
+      // Log that we're storing these details
+      console.log(`Storing phone numbers for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
     } else {
       // Try to retrieve stored phone numbers for this call
       if (callId && callDetailsStore[callId]) {
         phoneNumbers = callDetailsStore[callId];
+        console.log(`Retrieved phone numbers from storage for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
+      } else {
+        console.log(`No stored phone numbers found for call ${callId}. This is expected for transcript/summary events if the function was redeployed.`);
       }
     }
     
-    console.log(`Processing call ID: ${callId}`);
     console.log(`Phone numbers - From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
-    
-    // Determine which phone number to use for contact matching
-    // For outgoing calls (from your OpenPhone number), use the "to" number
-    // For incoming calls (to your OpenPhone number), use the "from" number
-    const direction = payload.data?.object?.direction || "outgoing";
-    const lookupNumber = direction === "outgoing" ? phoneNumbers.to : phoneNumbers.from;
-    
-    console.log(`Using ${lookupNumber} to look up contact`);
     
     // Default to fallback contact ID
     let contactId = process.env.FALLBACK_CONTACT_ID;
     
-    // Check if this is a call to/from Capital One
+    // Special case for Capital One: Use direct ID match
     if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
       // Use Capital One contact ID
-      contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Replace with actual ID
+      contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Replace with actual ID if needed
       console.log("Capital One number detected, using Capital One contact ID");
     } else {
-      // If not Capital One, proceed with regular lookup
-      let email = null;
+      // Not Capital One, so determine which phone number to use for contact matching
+      // For outgoing calls (from your OpenPhone number), use the "to" number
+      // For incoming calls (to your OpenPhone number), use the "from" number
+      const direction = payload.data?.object?.direction || "outgoing";
+      const lookupNumber = direction === "outgoing" ? phoneNumbers.to : phoneNumbers.from;
       
-      // Try to find the contact by phone number using our email mapping system
+      console.log(`Using ${lookupNumber} to look up contact`);
+      
       if (lookupNumber) {
         try {
           // Look up email by phone number
-          email = await lookupEmailByPhoneNumber(lookupNumber);
+          const email = await lookupEmailByPhoneNumber(lookupNumber);
           
           if (email) {
             console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
@@ -125,10 +135,6 @@ exports.handler = async function(event, context) {
     };
   }
 };
-
-// Simple in-memory store for call details
-// In a production environment, you might want to use a database
-const callDetailsStore = {};
 
 // Lookup email by phone number
 async function lookupEmailByPhoneNumber(phoneNumber) {
