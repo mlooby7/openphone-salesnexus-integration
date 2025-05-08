@@ -1,4 +1,9 @@
-// functions/webhook.js - Basic version
+// functions/webhook.js
+
+// Direct mappings for critical numbers - REPLACE THE EMAIL WITH THE ACTUAL CAPITAL ONE EMAIL IN SALESNEXUS
+const DIRECT_MAPPINGS = {
+  '+18884640727': 'capitalone@example.com' // Replace with the actual email in SalesNexus
+};
 
 exports.handler = async function(event, context) {
   try {
@@ -6,40 +11,109 @@ exports.handler = async function(event, context) {
     const payload = JSON.parse(event.body);
     console.log("Received webhook from OpenPhone:", JSON.stringify(payload));
 
-    // Get the fallback contact ID from environment variables
-    const fallbackContactId = process.env.FALLBACK_CONTACT_ID;
-
-    // Hard-coded Capital One contact ID - replace with the actual ID
-    const capitalOneContactId = "9cfa5b07-af10-4dfa-9cb2-a0b0986fc8c7"; // Replace with your Capital One contact ID
+    // Extract call ID and store it for consistent handling across webhooks
+    let callId = "";
     
-    // Extract phone numbers
-    let toNumber = "";
-    
-    if (payload.data && payload.data.object) {
-      toNumber = payload.data.object.to || "";
-    }
-    
-    console.log(`Call to: ${toNumber}`);
-    
-    // Very simple logic - if calling Capital One's number, use Capital One contact ID
-    let contactId = fallbackContactId;
-    
-    if (toNumber === "+18884640727") {
-      contactId = capitalOneContactId;
-      console.log("Capital One number detected, using Capital One contact ID");
-    } else {
-      console.log("Using fallback contact ID");
-    }
-    
-    // Handle different webhook types
+    // The structure of the payload differs by webhook type
     if (payload.type && payload.type.includes("recording")) {
+      // Recording webhooks have the call details directly in data.object
+      if (payload.data && payload.data.object) {
+        callId = payload.data.object.id || "";
+      }
+    } else if (payload.type && (payload.type.includes("transcript") || payload.type.includes("summary"))) {
+      // Transcript and summary webhooks have the callId in data.object.callId
+      if (payload.data && payload.data.object) {
+        callId = payload.data.object.callId || "";
+      }
+    }
+    
+    // Extract phone numbers from the webhook (for recording events)
+    // For transcript and summary events, we'll use stored data
+    let phoneNumbers = { from: "", to: "" };
+    
+    if (payload.type && payload.type.includes("recording") && payload.data && payload.data.object) {
+      phoneNumbers.from = payload.data.object.from || "";
+      phoneNumbers.to = payload.data.object.to || "";
+      
+      // Store these details for later use with transcript and summary events
+      callDetailsStore[callId] = phoneNumbers;
+    } else {
+      // Try to retrieve stored phone numbers for this call
+      if (callId && callDetailsStore[callId]) {
+        phoneNumbers = callDetailsStore[callId];
+      }
+    }
+  
+    // Add this near the top of your handler function, after extracting the phone numbers
+// Check if this is a call to/from Capital One
+if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
+  // Use Capital One contact ID
+  contactId = "YOUR_CAPITAL_ONE_CONTACT_ID"; // Replace with actual ID
+  console.log("Capital One number detected, using Capital One contact ID");
+} else {
+  // Use fallback contact ID
+  contactId = process.env.FALLBACK_CONTACT_ID;
+  console.log("Using fallback contact ID");
+}  
+    
+    console.log(`Processing call ID: ${callId}`);
+    console.log(`Phone numbers - From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
+    
+    // Determine which phone number to use for contact matching
+    // For outgoing calls (from your OpenPhone number), use the "to" number
+    // For incoming calls (to your OpenPhone number), use the "from" number
+    const direction = payload.data?.object?.direction || "outgoing";
+    const lookupNumber = direction === "outgoing" ? phoneNumbers.to : phoneNumbers.from;
+    
+    console.log(`Using ${lookupNumber} to look up contact`);
+    
+    // Default to fallback contact ID
+    let contactId = process.env.FALLBACK_CONTACT_ID;
+    let email = null;
+    
+    // Try to find the contact by phone number using our email mapping system
+    if (lookupNumber) {
+      try {
+        // Look up email by phone number
+        email = await lookupEmailByPhoneNumber(lookupNumber);
+        
+        if (email) {
+          console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+          
+          // Now find the contact by email in SalesNexus
+          const foundContactId = await findContactByEmail(email);
+          
+          if (foundContactId) {
+            contactId = foundContactId;
+            console.log(`Found contact by email: ${contactId}`);
+          } else {
+            console.log(`No contact found for email: ${email}, using fallback`);
+          }
+        } else {
+          console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+        }
+      } catch (error) {
+        console.error("Error looking up contact:", error);
+      }
+    }
+    
+    console.log(`Using contact ID: ${contactId}`);
+    
+    // Handle different webhook event types from OpenPhone
+    const webhookType = payload.type || "";
+    
+    if (webhookType.includes("recording")) {
       await handleRecording(payload, contactId);
-    } else if (payload.type && payload.type.includes("summary")) {
+    } else if (webhookType.includes("summary")) {
       await handleSummary(payload, contactId);
-    } else if (payload.type && payload.type.includes("transcript")) {
+    } else if (webhookType.includes("transcript")) {
       await handleTranscript(payload, contactId);
     } else {
-      console.log("Unknown webhook type:", payload.type);
+      console.log("Unhandled webhook type:", webhookType);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Unhandled webhook type" })
+      };
     }
     
     return {
@@ -50,119 +124,288 @@ exports.handler = async function(event, context) {
     console.error("Error processing webhook:", error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: error.message })
+      body: JSON.stringify({ error: "Failed to process webhook" })
     };
   }
 };
 
-// Handle recording webhook
-async function handleRecording(payload, contactId) {
+// Simple in-memory store for call details
+// In a production environment, you might want to use a database
+const callDetailsStore = {};
+
+// Lookup email by phone number
+async function lookupEmailByPhoneNumber(phoneNumber) {
   try {
-    const callData = payload.data?.object || {};
-    const mediaItems = callData.media || [];
+    // Format the phone number
+    const formattedPhone = formatPhoneNumber(phoneNumber);
     
-    // Create note content
-    const noteDetails = `
-OpenPhone Call Recording
------------------------
-Date: ${new Date(callData.createdAt || Date.now()).toLocaleString()}
-From: ${callData.from || "Unknown"}
-To: ${callData.to || "Unknown"}
-Duration: ${mediaItems.length > 0 ? Math.round(mediaItems[0].duration / 60) + " minutes" : "Unknown"}
-Recording URL: ${mediaItems.length > 0 ? mediaItems[0].url : "None"}
-`;
+    if (!formattedPhone) {
+      console.log("Invalid phone number format:", phoneNumber);
+      return null;
+    }
     
-    // Create note in SalesNexus
-    await createNote(contactId, noteDetails);
+    // Check direct mappings first
+    if (DIRECT_MAPPINGS[formattedPhone]) {
+      console.log(`Found email in direct mappings: ${DIRECT_MAPPINGS[formattedPhone]}`);
+      return DIRECT_MAPPINGS[formattedPhone];
+    }
+    
+    // Call our mapping function to get the email
+    try {
+      const siteUrl = process.env.SITE_URL || 'https://sweet-liger-902232.netlify.app';
+      console.log(`Looking up email at: ${siteUrl}/.netlify/functions/mapping/lookup`);
+      
+      const response = await fetch(`${siteUrl}/.netlify/functions/mapping/lookup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber: formattedPhone })
+      });
+      
+      if (!response.ok) {
+        if (response.status === 404) {
+          console.log(`No email mapping found for phone: ${formattedPhone}`);
+          return null;
+        }
+        throw new Error(`Error looking up email: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return data.email;
+    } catch (error) {
+      console.error("Error with mapping function:", error);
+      // If API call fails, we return null and use fallback contact
+      return null;
+    }
   } catch (error) {
-    console.error("Error handling recording:", error);
+    console.error("Error looking up email:", error);
+    return null;
   }
 }
 
-// Handle summary webhook
-async function handleSummary(payload, contactId) {
+// Format phone number to E.164 format
+function formatPhoneNumber(phone) {
+  if (!phone) return null;
+  
+  // Remove all non-digit characters
+  let digits = phone.replace(/\D/g, '');
+  
+  // Add country code if missing
+  if (digits.length === 10) {
+    digits = '1' + digits; // Assume US number
+  }
+  
+  // Validate length (assuming international format)
+  if (digits.length < 10 || digits.length > 15) {
+    return null;
+  }
+  
+  return '+' + digits;
+}
+
+// Find a contact in SalesNexus by email
+async function findContactByEmail(email) {
   try {
-    const summaryData = payload.data?.object || {};
+    if (!email) {
+      console.log("No email provided");
+      return null;
+    }
     
-    // Format summary points
-    let summaryText = "No summary available";
-    if (summaryData.summary && summaryData.summary.length > 0) {
-      summaryText = "Summary:\n- " + summaryData.summary.join("\n- ");
+    console.log(`Searching for contact with email: ${email}`);
+    
+    // Get the API key
+    const apiKey = process.env.SALESNEXUS_API_KEY;
+    
+    // Use the SalesNexus API to search for contacts by email
+    const searchPayload = [{
+      "function": "get-contacts",
+      "parameters": {
+        "login-token": apiKey,
+        "filter-value": email, // Search by email
+        "start-after": "0",
+        "page-size": "10"
+      }
+    }];
+    
+    console.log("Sending search request to SalesNexus");
+    
+    // Make the API request
+    const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(searchPayload)
+    });
+    
+    const result = await response.json();
+    console.log("Search result from SalesNexus:", JSON.stringify(result));
+    
+    // Check if we got a valid response with contacts
+    if (result && result[0] && result[0].result && result[0].result.success === "true" && result[0].result["contact-list"]) {
+      const contactListStr = result[0].result["contact-list"];
       
-      if (summaryData.nextSteps && summaryData.nextSteps.length > 0) {
-        summaryText += "\n\nNext Steps:\n- " + summaryData.nextSteps.join("\n- ");
+      // Parse the contact list
+      let contactList = [];
+      
+      try {
+        // Try to parse as JSON if it's a string
+        if (typeof contactListStr === 'string') {
+          contactList = JSON.parse(contactListStr);
+        } else if (Array.isArray(contactListStr)) {
+          // If it's already an array, use it directly
+          contactList = contactListStr;
+        } else if (typeof contactListStr === 'object') {
+          // If it's an object, wrap it in an array
+          contactList = [contactListStr];
+        }
+      } catch (e) {
+        console.error("Error parsing contact list:", e);
+        return null;
+      }
+      
+      // Check if we found any contacts
+      if (contactList && contactList.length > 0) {
+        console.log(`Found ${contactList.length} matching contacts`);
+        // Return the ID of the first matching contact
+        return contactList[0].id;
       }
     }
     
-    // Create note content
+    console.log("No matching contacts found");
+    return null;
+  } catch (error) {
+    console.error("Error searching for contact:", error);
+    return null;
+  }
+}
+
+// Handle OpenPhone recording webhook
+async function handleRecording(payload, contactId) {
+  try {
+    // Extract the recording details from the OpenPhone payload structure
+    const callData = payload.data?.object || {};
+    const mediaItems = callData.media || [];
+    const recordingUrl = mediaItems.length > 0 ? mediaItems[0].url : "No recording URL available";
+    
+    const callDate = new Date(callData.createdAt || Date.now()).toLocaleString();
+    const callDuration = mediaItems.length > 0 && mediaItems[0].duration ? 
+      `${Math.round(mediaItems[0].duration / 60)} minutes` : "Unknown duration";
+    const callerNumber = callData.from || "Unknown caller";
+    const receiverNumber = callData.to || "Unknown receiver";
+    const callId = callData.id || "";
+    
+    // Create the note details with the recording information
     const noteDetails = `
-OpenPhone Call Summary
----------------------
-Date: ${new Date(payload.createdAt || Date.now()).toLocaleString()}
-${summaryText}
+OpenPhone Call Recording - ${callDate}
+-------------------------------------
+From: ${callerNumber}
+To: ${receiverNumber}
+Duration: ${callDuration}
+Recording: ${recordingUrl}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 `;
     
-    // Create note in SalesNexus
+    // Create the note in SalesNexus
+    await createNote(contactId, noteDetails);
+  } catch (error) {
+    console.error("Error handling recording:", error);
+    throw error;
+  }
+}
+
+// Handle OpenPhone summary webhook
+async function handleSummary(payload, contactId) {
+  try {
+    // Extract the summary details from the OpenPhone payload structure
+    const summaryData = payload.data?.object || {};
+    const summaryPoints = summaryData.summary || [];
+    const nextSteps = summaryData.nextSteps || [];
+    
+    // Format the summary as a string
+    let formattedSummary = "No summary available";
+    if (summaryPoints.length > 0) {
+      formattedSummary = "Summary:\n- " + summaryPoints.join("\n- ");
+      
+      if (nextSteps.length > 0) {
+        formattedSummary += "\n\nNext Steps:\n- " + nextSteps.join("\n- ");
+      }
+    }
+    
+    const callDate = new Date(payload.createdAt || Date.now()).toLocaleString();
+    const callId = summaryData.callId || "";
+    
+    // Create the note details with the summary information
+    const noteDetails = `
+OpenPhone Call Summary - ${callDate}
+------------------------------------
+${formattedSummary}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
+`;
+    
+    // Create the note in SalesNexus
     await createNote(contactId, noteDetails);
   } catch (error) {
     console.error("Error handling summary:", error);
+    throw error;
   }
 }
 
-// Handle transcript webhook
+// Handle OpenPhone transcript webhook
 async function handleTranscript(payload, contactId) {
   try {
+    // Extract the transcript details from the OpenPhone payload structure
     const transcriptData = payload.data?.object || {};
+    const dialogueSegments = transcriptData.dialogue || [];
     
-    // Format transcript
-    let transcriptText = "No transcript available";
-    if (transcriptData.dialogue && transcriptData.dialogue.length > 0) {
-      transcriptText = transcriptData.dialogue
-        .map(segment => `${segment.identifier || "Speaker"}: ${segment.content || ""}`)
+    // Format the transcript
+    let formattedTranscript = "No transcript content";
+    if (dialogueSegments.length > 0) {
+      formattedTranscript = dialogueSegments
+        .map(segment => {
+          const speaker = segment.identifier || "Speaker";
+          return `${speaker}: ${segment.content || ""}`;
+        })
         .join("\n");
     }
     
-    // Create note content
+    const callDate = new Date(transcriptData.createdAt || Date.now()).toLocaleString();
+    const callId = transcriptData.callId || "";
+    
+    // Create the note details with the transcript information
     const noteDetails = `
-OpenPhone Call Transcript
-------------------------
-Date: ${new Date(payload.createdAt || Date.now()).toLocaleString()}
-${transcriptText}
+OpenPhone Call Transcript - ${callDate}
+---------------------------------------
+${formattedTranscript}
+
+Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
 `;
     
-    // Create note in SalesNexus
+    // Create the note in SalesNexus
     await createNote(contactId, noteDetails);
   } catch (error) {
     console.error("Error handling transcript:", error);
+    throw error;
   }
 }
 
-// Create note in SalesNexus
+// Function to create a note in SalesNexus
 async function createNote(contactId, details) {
   try {
-    // Check if we have a valid contact ID
-    if (!contactId) {
-      console.error("No contact ID provided");
-      return;
-    }
-    
-    // Use API key from environment variables
+    // Use API key directly
     const apiKey = process.env.SALESNEXUS_API_KEY;
     
-    // Create the note payload
+    // Define the note creation payload
     const notePayload = [{
       "function": "create-note",
       "parameters": {
         "login-token": apiKey,
         "contact-id": contactId,
         "details": details,
-        "type": 1
+        "type": 1  // Using 1 as a default numeric type code
       }
     }];
     
-    console.log("Creating note for contact:", contactId);
-    
-    // Make the API request
+    // Make the API request to SalesNexus
     const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -172,8 +415,14 @@ async function createNote(contactId, details) {
     const result = await response.json();
     console.log("Note creation result:", JSON.stringify(result));
     
+    // Check for any errors in the response
+    if (result[0].error) {
+      throw new Error(`SalesNexus API error: ${result[0].error}`);
+    }
+    
     return result;
   } catch (error) {
     console.error("Error creating note:", error);
+    throw error;
   }
 }
