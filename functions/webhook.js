@@ -1,15 +1,16 @@
 // functions/webhook.js
 
-// Direct mappings for critical numbers - REPLACE THE EMAIL WITH THE ACTUAL CAPITAL ONE EMAIL IN SALESNEXUS
+// Direct mappings for critical numbers - Add your most important contacts here
 const DIRECT_MAPPINGS = {
   '+18884640727': 'capitalone@example.com', // Capital One
-  '+12819412710': 'maya@ideasunlimitedonline.com' // Maya's email
+  '+12819412710': 'maya@ideasunlimitedonline.com', // Maya
+  '+19513958599': 'maurice@example.com' // Maurice Miles - Update with actual email
 };
 
-// You can also map phone numbers directly to contact IDs if you know them
+// Direct mappings to contact IDs
 const DIRECT_CONTACT_MAPPINGS = {
   '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6' // Capital One contact ID
-  // Add Maya's contact ID here if you know it: '+12819412710': 'maya-contact-id-here'
+  // Add more contacts as needed
 };
 
 // For in-memory caching between webhooks in the same execution context
@@ -54,48 +55,6 @@ function initializeFirebase() {
   return firebaseInitialized;
 }
 
-// Backup storage option using temporary filesystem
-async function storeInTempFile(callId, phoneNumbers) {
-  try {
-    const fs = require('fs');
-    const filepath = `/tmp/call_${callId}.json`;
-    
-    fs.writeFileSync(filepath, JSON.stringify({
-      from: phoneNumbers.from,
-      to: phoneNumbers.to,
-      timestamp: Date.now()
-    }));
-    
-    console.log(`Stored call details in temp file for call ${callId}`);
-    return true;
-  } catch (error) {
-    console.error("Error storing in temp file:", error);
-    return false;
-  }
-}
-
-// Retrieve from temporary filesystem
-async function getFromTempFile(callId) {
-  try {
-    const fs = require('fs');
-    const filepath = `/tmp/call_${callId}.json`;
-    
-    if (fs.existsSync(filepath)) {
-      const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
-      console.log(`Retrieved call details from temp file for call ${callId}`);
-      return {
-        from: data.from,
-        to: data.to
-      };
-    }
-    
-    return null;
-  } catch (error) {
-    console.error("Error reading from temp file:", error);
-    return null;
-  }
-}
-
 // Store call details in Firebase
 async function storeCallDetailsInFirebase(callId, phoneNumbers) {
   try {
@@ -109,7 +68,7 @@ async function storeCallDetailsInFirebase(callId, phoneNumbers) {
       
       if (!initialized) {
         console.log("Firebase not initialized, using backup storage");
-        return await storeInTempFile(callId, phoneNumbers);
+        return false;
       }
       
       // Special handling for direct mapped numbers
@@ -134,8 +93,8 @@ async function storeCallDetailsInFirebase(callId, phoneNumbers) {
       console.log(`Successfully stored call details in Firebase for call ${callId}`);
       return true;
     } catch (error) {
-      console.error("Error storing in Firebase, trying backup:", error);
-      return await storeInTempFile(callId, phoneNumbers);
+      console.error("Error storing in Firebase:", error);
+      return false;
     }
   } catch (error) {
     console.error("Error storing call details:", error);
@@ -155,8 +114,8 @@ async function getCallDetailsFromFirebase(callId) {
       const initialized = initializeFirebase();
       
       if (!initialized) {
-        console.log("Firebase not initialized, using backup storage");
-        return await getFromTempFile(callId);
+        console.log("Firebase not initialized");
+        return null;
       }
       
       console.log(`Attempting to retrieve call details from Firebase for call ID: ${callId}`);
@@ -173,12 +132,12 @@ async function getCallDetailsFromFirebase(callId) {
           isDirectMapped: data.isDirectMapped || false
         };
       } else {
-        console.log(`No call details found in Firebase for call ${callId}, trying backup`);
-        return await getFromTempFile(callId);
+        console.log(`No call details found in Firebase for call ${callId}`);
+        return null;
       }
     } catch (error) {
-      console.error("Error retrieving from Firebase, trying backup:", error);
-      return await getFromTempFile(callId);
+      console.error("Error retrieving from Firebase:", error);
+      return null;
     }
   } catch (error) {
     console.error("Error retrieving call details:", error);
@@ -277,13 +236,12 @@ exports.handler = async function(event, context) {
       
       if (lookupNumber) {
         try {
-          // Look up email by phone number
-          const email = await lookupEmailByPhoneNumber(lookupNumber);
-          
-          if (email) {
-            console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+          // First check direct mappings
+          if (DIRECT_MAPPINGS[lookupNumber]) {
+            const email = DIRECT_MAPPINGS[lookupNumber];
+            console.log(`Found email in direct mappings: ${email}`);
             
-            // Now find the contact by email in SalesNexus
+            // Find contact by email in SalesNexus
             const foundContactId = await findContactByEmail(email);
             
             if (foundContactId) {
@@ -293,10 +251,32 @@ exports.handler = async function(event, context) {
               console.log(`No contact found for email: ${email}, using fallback`);
             }
           } else {
-            console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+            // Try the lookup function
+            try {
+              // Adding a timeout of 2 seconds to prevent long waits
+              const email = await lookupEmailWithTimeout(lookupNumber);
+              
+              if (email) {
+                console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+                
+                // Now find the contact by email in SalesNexus
+                const foundContactId = await findContactByEmail(email);
+                
+                if (foundContactId) {
+                  contactId = foundContactId;
+                  console.log(`Found contact by email: ${contactId}`);
+                } else {
+                  console.log(`No contact found for email: ${email}, using fallback`);
+                }
+              } else {
+                console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+              }
+            } catch (error) {
+              console.error("Error looking up contact:", error);
+            }
           }
         } catch (error) {
-          console.error("Error looking up contact:", error);
+          console.error("Error in contact lookup process:", error);
         }
       }
     }
@@ -333,6 +313,27 @@ exports.handler = async function(event, context) {
   }
 };
 
+// Lookup email with a timeout
+async function lookupEmailWithTimeout(phoneNumber) {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      console.log(`Lookup timed out for ${phoneNumber}`);
+      resolve(null);
+    }, 2000);
+    
+    lookupEmailByPhoneNumber(phoneNumber)
+      .then(email => {
+        clearTimeout(timeoutId);
+        resolve(email);
+      })
+      .catch(error => {
+        console.error("Error in email lookup:", error);
+        clearTimeout(timeoutId);
+        resolve(null);
+      });
+  });
+}
+
 // Lookup email by phone number
 async function lookupEmailByPhoneNumber(phoneNumber) {
   try {
@@ -355,9 +356,9 @@ async function lookupEmailByPhoneNumber(phoneNumber) {
       const siteUrl = process.env.SITE_URL || 'https://sweet-liger-902232.netlify.app';
       console.log(`Looking up email at: ${siteUrl}/.netlify/functions/mapping/lookup`);
       
-      // Adding a timeout of 3 seconds to prevent long waits
+      // Adding a timeout of 2 seconds to prevent long waits
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
       
       const response = await fetch(`${siteUrl}/.netlify/functions/mapping/lookup`, {
         method: 'POST',
@@ -616,7 +617,7 @@ async function createNote(contactId, details) {
     const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(notePayload)  // FIXED: Was using searchPayload before
+      body: JSON.stringify(notePayload)
     });
     
     const result = await response.json();
