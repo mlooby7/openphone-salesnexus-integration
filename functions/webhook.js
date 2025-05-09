@@ -5,13 +5,14 @@ const DIRECT_MAPPINGS = {
   '+18884640727': 'capitalone@example.com', // Capital One
   '+12819412710': 'maya@ideasunlimitedonline.com', // Maya
   '+19513958599': 'maurice@example.com', // Maurice Miles
-  '+13127802300': 'pj@targetron.com' // PJ Entrepreneur
+  '+13127802300': 'pj@targetron.com', // PJ Entrepreneur
+  '+17138620001': 'support@salesnexus.com' // SalesNexus Support
 };
 
 // Direct mappings to contact IDs
 const DIRECT_CONTACT_MAPPINGS = {
-  '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6', // Capital One contact ID
-  '+13127802300': '99c6838f-2a03-4eac-af21-010ef6a1d554' // PJ Entrepreneur contact ID
+  '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6' // Capital One contact ID
+  // Add other contact IDs as needed
 };
 
 // For in-memory caching between webhooks in the same execution context
@@ -254,8 +255,8 @@ exports.handler = async function(event, context) {
           } else {
             // Try the lookup function
             try {
-              // Adding a timeout of 2 seconds to prevent long waits
-              const email = await lookupEmailWithTimeout(lookupNumber);
+              // INCREASED TIMEOUT: Adding a timeout of 5 seconds to give more time
+              const email = await lookupEmailWithTimeout(lookupNumber, 5000);
               
               if (email) {
                 console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
@@ -314,15 +315,15 @@ exports.handler = async function(event, context) {
   }
 };
 
-// Lookup email with a timeout
-async function lookupEmailWithTimeout(phoneNumber) {
+// Lookup email with a timeout - UPDATED WITH CONFIGURABLE TIMEOUT
+async function lookupEmailWithTimeout(phoneNumber, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const timeoutId = setTimeout(() => {
-      console.log(`Lookup timed out for ${phoneNumber}`);
+      console.log(`Lookup timed out for ${phoneNumber} after ${timeoutMs}ms`);
       resolve(null);
-    }, 2000);
+    }, timeoutMs);
     
-    lookupEmailByPhoneNumber(phoneNumber)
+    lookupEmailByPhoneNumber(phoneNumber, timeoutMs - 500)
       .then(email => {
         clearTimeout(timeoutId);
         resolve(email);
@@ -335,8 +336,8 @@ async function lookupEmailWithTimeout(phoneNumber) {
   });
 }
 
-// Lookup email by phone number
-async function lookupEmailByPhoneNumber(phoneNumber) {
+// Lookup email by phone number - UPDATED WITH CONFIGURABLE TIMEOUT
+async function lookupEmailByPhoneNumber(phoneNumber, timeoutMs = 4500) {
   try {
     // Format the phone number
     const formattedPhone = formatPhoneNumber(phoneNumber);
@@ -357,9 +358,9 @@ async function lookupEmailByPhoneNumber(phoneNumber) {
       const siteUrl = process.env.SITE_URL || 'https://sweet-liger-902232.netlify.app';
       console.log(`Looking up email at: ${siteUrl}/.netlify/functions/mapping/lookup`);
       
-      // Adding a timeout of 2 seconds to prevent long waits
+      // Increased timeout for the fetch request
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       
       const response = await fetch(`${siteUrl}/.netlify/functions/mapping/lookup`, {
         method: 'POST',
