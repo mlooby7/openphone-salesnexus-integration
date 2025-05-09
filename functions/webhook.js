@@ -589,13 +589,13 @@ Direct link to call in OpenPhone: https://app.openphone.com/calls/${callId}
   }
 }
 
-// Function to create a note in SalesNexus
+// Function to create a note in SalesNexus - Updated based on SalesNexus API documentation
 async function createNote(contactId, details) {
   try {
     // Use API key directly
     const apiKey = process.env.SALESNEXUS_API_KEY;
     
-    // Define the note creation payload
+    // Define the note creation payload - correctly formatted per SalesNexus API docs
     const notePayload = [{
       "function": "create-note",
       "parameters": {
@@ -603,7 +603,8 @@ async function createNote(contactId, details) {
         "contact-id": contactId,
         "details": details,
         "type": 1  // Using 1 as a default numeric type code
-      }
+      },
+      "request-id": "openphone-webhook-" + Date.now()
     }];
     
     // Make the API request to SalesNexus
@@ -616,12 +617,15 @@ async function createNote(contactId, details) {
     const result = await response.json();
     console.log("Note creation result:", JSON.stringify(result));
     
-    // Check for any errors in the response
-    if (result[0].error) {
+    // Check for success in the result
+    if (result && result[0] && result[0].result && result[0].result.success === "true") {
+      console.log("Note created successfully");
+      return result;
+    } else if (result && result[0] && result[0].error) {
       throw new Error(`SalesNexus API error: ${result[0].error}`);
+    } else {
+      throw new Error("Unknown error creating note");
     }
-    
-    return result;
   } catch (error) {
     console.error("Error creating note:", error);
     throw error;
