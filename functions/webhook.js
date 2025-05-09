@@ -2,7 +2,14 @@
 
 // Direct mappings for critical numbers - REPLACE THE EMAIL WITH THE ACTUAL CAPITAL ONE EMAIL IN SALESNEXUS
 const DIRECT_MAPPINGS = {
-  '+18884640727': 'capitalone@example.com' // Replace with the actual email in SalesNexus
+  '+18884640727': 'capitalone@example.com', // Capital One
+  '+12819412710': 'maya@ideasunlimitedonline.com' // Maya's email
+};
+
+// You can also map phone numbers directly to contact IDs if you know them
+const DIRECT_CONTACT_MAPPINGS = {
+  '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6' // Capital One contact ID
+  // Add Maya's contact ID here if you know it: '+12819412710': 'maya-contact-id-here'
 };
 
 // For in-memory caching between webhooks in the same execution context
@@ -105,10 +112,12 @@ async function storeCallDetailsInFirebase(callId, phoneNumbers) {
         return await storeInTempFile(callId, phoneNumbers);
       }
       
-      // Special handling for Capital One number
-      const isCapitalOne = phoneNumbers.from === "+18884640727" || phoneNumbers.to === "+18884640727";
-      if (isCapitalOne) {
-        console.log(`Storing Capital One phone numbers for call ${callId}`);
+      // Special handling for direct mapped numbers
+      const isDirectMapped = DIRECT_MAPPINGS[phoneNumbers.from] || DIRECT_MAPPINGS[phoneNumbers.to] || 
+                             DIRECT_CONTACT_MAPPINGS[phoneNumbers.from] || DIRECT_CONTACT_MAPPINGS[phoneNumbers.to];
+      
+      if (isDirectMapped) {
+        console.log(`Storing direct mapped phone numbers for call ${callId}`);
       }
       
       const db = admin.firestore();
@@ -117,7 +126,7 @@ async function storeCallDetailsInFirebase(callId, phoneNumbers) {
       await db.collection('callDetails').doc(callId).set({
         from: phoneNumbers.from,
         to: phoneNumbers.to,
-        isCapitalOne: isCapitalOne,
+        isDirectMapped: !!isDirectMapped,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         expireAt: new Date(Date.now() + 60 * 60 * 1000) // 1 hour from now
       });
@@ -161,7 +170,7 @@ async function getCallDetailsFromFirebase(callId) {
         return {
           from: data.from || "",
           to: data.to || "",
-          isCapitalOne: data.isCapitalOne || false
+          isDirectMapped: data.isDirectMapped || false
         };
       } else {
         console.log(`No call details found in Firebase for call ${callId}, trying backup`);
@@ -233,9 +242,9 @@ exports.handler = async function(event, context) {
           callDetailsStore[callId] = phoneNumbers;
           console.log(`Retrieved phone numbers from Firebase for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
           
-          // Direct Capital One detection
-          if (firebasePhoneNumbers.isCapitalOne) {
-            console.log("Capital One call detected from Firebase data");
+          // Direct mapping detection
+          if (firebasePhoneNumbers.isDirectMapped) {
+            console.log("Direct mapped call detected from Firebase data");
           }
         } else {
           console.log(`No stored phone numbers found for call ${callId} in memory or Firebase`);
@@ -248,14 +257,17 @@ exports.handler = async function(event, context) {
     // Default to fallback contact ID
     let contactId = process.env.FALLBACK_CONTACT_ID;
     
-    // IMPORTANT: Special case for Capital One (hardcoded solution)
-    // This direct check ensures Capital One calls are always routed correctly
-    if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
-      // Use Capital One contact ID
-      contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Hardcoded Capital One contact ID
-      console.log("Capital One number detected, using Capital One contact ID");
+    // First check for direct contact ID mappings
+    if (DIRECT_CONTACT_MAPPINGS[phoneNumbers.from]) {
+      contactId = DIRECT_CONTACT_MAPPINGS[phoneNumbers.from];
+      console.log(`Direct contact mapping for ${phoneNumbers.from}: ${contactId}`);
+    } else if (DIRECT_CONTACT_MAPPINGS[phoneNumbers.to]) {
+      contactId = DIRECT_CONTACT_MAPPINGS[phoneNumbers.to];
+      console.log(`Direct contact mapping for ${phoneNumbers.to}: ${contactId}`);
     } else {
-      // Not Capital One, so determine which phone number to use for contact matching
+      // Not directly mapped to a contact ID, so look up by email
+      
+      // Determine which phone number to use for contact matching
       // For outgoing calls (from your OpenPhone number), use the "to" number
       // For incoming calls (to your OpenPhone number), use the "from" number
       const direction = payload.data?.object?.direction || "outgoing";
@@ -343,11 +355,18 @@ async function lookupEmailByPhoneNumber(phoneNumber) {
       const siteUrl = process.env.SITE_URL || 'https://sweet-liger-902232.netlify.app';
       console.log(`Looking up email at: ${siteUrl}/.netlify/functions/mapping/lookup`);
       
+      // Adding a timeout of 3 seconds to prevent long waits
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      
       const response = await fetch(`${siteUrl}/.netlify/functions/mapping/lookup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phoneNumber: formattedPhone })
+        body: JSON.stringify({ phoneNumber: formattedPhone }),
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         if (response.status === 404) {
