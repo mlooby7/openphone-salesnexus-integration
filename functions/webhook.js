@@ -3,7 +3,7 @@
 // Direct mappings for critical numbers - Add your most important contacts here
 const DIRECT_MAPPINGS = {
   '+18884640727': 'capitalone@example.com', // Capital One
-  '+12819412710': 'maya@ideasunlimitedonline.com', // Maya
+  '+12819412710': 'mashaimw@osbprovider.com', // Maya - FIXED EMAIL ADDRESS
   '+19513958599': 'maurice@example.com', // Maurice Miles
   '+13127802300': 'pj@targetron.com', // PJ Entrepreneur
   '+17138620001': 'support@salesnexus.com' // SalesNexus Support
