@@ -57,14 +57,14 @@ exports.handler = async function(event, context) {
       };
     }
   } catch (error) {
-    console.error('Error looking up email by phone:', error);
+    console.error('Error in router:', error);
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to lookup email', message: error.message })
+      body: JSON.stringify({ error: 'Failed to process request', message: error.message })
     };
   }
-}
+};
 
 // Format phone number to E.164 format
 function formatPhoneNumber(phone) {
@@ -91,14 +91,6 @@ function isValidEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
-    console.error('Mapping function error:', error);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: 'Internal server error', message: error.message })
-    };
-  }
-};
 
 // Get all mappings with optional search filter
 async function getMappings(event, headers) {
@@ -294,3 +286,11 @@ async function lookupEmailByPhone(event, headers) {
       body: JSON.stringify({ email: doc.data().email })
     };
   } catch (error) {
+    console.error('Error looking up email by phone:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to lookup email', message: error.message })
+    };
+  }
+}
