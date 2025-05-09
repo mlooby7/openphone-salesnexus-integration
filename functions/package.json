@@ -1,0 +1,9 @@
+{
+  "name": "openphone-salesnexus-integration-functions",
+  "version": "1.0.0",
+  "description": "Netlify functions for OpenPhone to SalesNexus integration",
+  "main": "webhook.js",
+  "dependencies": {
+    "firebase-admin": "^11.10.1"
+  }
+}
