@@ -4,13 +4,14 @@
 const DIRECT_MAPPINGS = {
   '+18884640727': 'capitalone@example.com', // Capital One
   '+12819412710': 'maya@ideasunlimitedonline.com', // Maya
-  '+19513958599': 'maurice@example.com' // Maurice Miles - Update with actual email
+  '+19513958599': 'maurice@example.com', // Maurice Miles
+  '+13127802300': 'pj@targetron.com' // PJ Entrepreneur
 };
 
 // Direct mappings to contact IDs
 const DIRECT_CONTACT_MAPPINGS = {
-  '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6' // Capital One contact ID
-  // Add more contacts as needed
+  '+18884640727': 'cea99ef5-c1e1-4ad5-a73a-bd74144e71a6', // Capital One contact ID
+  '+13127802300': '99c6838f-2a03-4eac-af21-010ef6a1d554' // PJ Entrepreneur contact ID
 };
 
 // For in-memory caching between webhooks in the same execution context
@@ -448,32 +449,24 @@ async function findContactByEmail(email) {
     
     // Check if we got a valid response with contacts
     if (result && result[0] && result[0].result && result[0].result.success === "true" && result[0].result["contact-list"]) {
-      const contactListStr = result[0].result["contact-list"];
+      const contactList = result[0].result["contact-list"];
       
-      // Parse the contact list
-      let contactList = [];
-      
-      try {
-        // Try to parse as JSON if it's a string
-        if (typeof contactListStr === 'string') {
-          contactList = JSON.parse(contactListStr);
-        } else if (Array.isArray(contactListStr)) {
-          // If it's already an array, use it directly
-          contactList = contactListStr;
-        } else if (typeof contactListStr === 'object') {
-          // If it's an object, wrap it in an array
-          contactList = [contactListStr];
-        }
-      } catch (e) {
-        console.error("Error parsing contact list:", e);
-        return null;
+      // Check if we have contact IDs
+      if (contactList["contact-ids"] && contactList["contact-ids"].length > 0) {
+        console.log(`Found ${contactList["contact-ids"].length} matching contacts`);
+        // Return the ID of the first matching contact
+        return contactList["contact-ids"][0];
       }
       
-      // Check if we found any contacts
-      if (contactList && contactList.length > 0) {
-        console.log(`Found ${contactList.length} matching contacts`);
-        // Return the ID of the first matching contact
-        return contactList[0].id;
+      // Try another way to extract contact IDs
+      if (contactList["total-record-count"] && parseInt(contactList["total-record-count"]) > 0) {
+        console.log(`Found ${contactList["total-record-count"]} matching contacts`);
+        // Find the first contact ID
+        const contactIds = Object.keys(contactList["contact-info"] || {});
+        if (contactIds.length > 0) {
+          console.log(`Using first contact ID: ${contactIds[0]}`);
+          return contactIds[0];
+        }
       }
     }
     
