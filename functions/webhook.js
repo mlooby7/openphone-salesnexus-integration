@@ -15,48 +15,121 @@ const admin = require('firebase-admin');
 let firebaseInitialized = false;
 function initializeFirebase() {
   if (!firebaseInitialized) {
-    // Firebase initialization - You'll need to replace these with your actual Firebase config
-    // Get this from Firebase console -> Project Settings -> Service Accounts -> Generate new private key
-    const serviceAccount = {
-      "type": "service_account",
-      "project_id": process.env.FIREBASE_PROJECT_ID,
-      "private_key_id": process.env.FIREBASE_PRIVATE_KEY_ID,
-      "private_key": process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      "client_email": process.env.FIREBASE_CLIENT_EMAIL,
-      "client_id": process.env.FIREBASE_CLIENT_ID,
-      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-      "token_uri": "https://oauth2.googleapis.com/token",
-      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-      "client_x509_cert_url": process.env.FIREBASE_CLIENT_CERT_URL
-    };
+    try {
+      // Use the FIREBASE_SERVICE_ACCOUNT environment variable
+      let serviceAccount;
+      
+      try {
+        // Try to parse the service account JSON from the environment variable
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        console.log("Successfully parsed service account from environment variable");
+      } catch (parseError) {
+        console.error("Error parsing service account:", parseError);
+        // If parsing fails, try to use it directly (in case it's already an object)
+        serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+      }
 
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      
+      firebaseInitialized = true;
+      console.log("Firebase initialized successfully");
+    } catch (error) {
+      console.error("Error initializing Firebase:", error);
+      console.error("Firebase environment variables:", {
+        project_id: process.env.FIREBASE_PROJECT_ID ? "set" : "not set",
+        service_account: process.env.FIREBASE_SERVICE_ACCOUNT ? "set" : "not set"
+      });
+    }
+  }
+  
+  return firebaseInitialized;
+}
+
+// Backup storage option using temporary filesystem
+async function storeInTempFile(callId, phoneNumbers) {
+  try {
+    const fs = require('fs');
+    const filepath = `/tmp/call_${callId}.json`;
     
-    firebaseInitialized = true;
-    console.log("Firebase initialized successfully");
+    fs.writeFileSync(filepath, JSON.stringify({
+      from: phoneNumbers.from,
+      to: phoneNumbers.to,
+      timestamp: Date.now()
+    }));
+    
+    console.log(`Stored call details in temp file for call ${callId}`);
+    return true;
+  } catch (error) {
+    console.error("Error storing in temp file:", error);
+    return false;
+  }
+}
+
+// Retrieve from temporary filesystem
+async function getFromTempFile(callId) {
+  try {
+    const fs = require('fs');
+    const filepath = `/tmp/call_${callId}.json`;
+    
+    if (fs.existsSync(filepath)) {
+      const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+      console.log(`Retrieved call details from temp file for call ${callId}`);
+      return {
+        from: data.from,
+        to: data.to
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error reading from temp file:", error);
+    return null;
   }
 }
 
 // Store call details in Firebase
 async function storeCallDetailsInFirebase(callId, phoneNumbers) {
   try {
-    initializeFirebase();
-    const db = admin.firestore();
+    if (!callId || !phoneNumbers || !phoneNumbers.from || !phoneNumbers.to) {
+      console.log("Invalid call details provided for storage");
+      return false;
+    }
     
-    // Store with TTL of 1 hour (we'll automatically delete old entries)
-    await db.collection('callDetails').doc(callId).set({
-      from: phoneNumbers.from,
-      to: phoneNumbers.to,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      expireAt: new Date(Date.now() + 60 * 60 * 1000) // 1 hour from now
-    });
-    
-    console.log(`Stored call details in Firebase for call ${callId}`);
-    return true;
+    try {
+      const initialized = initializeFirebase();
+      
+      if (!initialized) {
+        console.log("Firebase not initialized, using backup storage");
+        return await storeInTempFile(callId, phoneNumbers);
+      }
+      
+      // Special handling for Capital One number
+      const isCapitalOne = phoneNumbers.from === "+18884640727" || phoneNumbers.to === "+18884640727";
+      if (isCapitalOne) {
+        console.log(`Storing Capital One phone numbers for call ${callId}`);
+      }
+      
+      const db = admin.firestore();
+      
+      // Store with TTL of 1 hour (we'll automatically delete old entries)
+      await db.collection('callDetails').doc(callId).set({
+        from: phoneNumbers.from,
+        to: phoneNumbers.to,
+        isCapitalOne: isCapitalOne,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        expireAt: new Date(Date.now() + 60 * 60 * 1000) // 1 hour from now
+      });
+      
+      console.log(`Successfully stored call details in Firebase for call ${callId}`);
+      return true;
+    } catch (error) {
+      console.error("Error storing in Firebase, trying backup:", error);
+      return await storeInTempFile(callId, phoneNumbers);
+    }
   } catch (error) {
-    console.error("Error storing call details in Firebase:", error);
+    console.error("Error storing call details:", error);
     return false;
   }
 }
@@ -64,24 +137,42 @@ async function storeCallDetailsInFirebase(callId, phoneNumbers) {
 // Retrieve call details from Firebase
 async function getCallDetailsFromFirebase(callId) {
   try {
-    initializeFirebase();
-    const db = admin.firestore();
-    
-    const doc = await db.collection('callDetails').doc(callId).get();
-    
-    if (doc.exists) {
-      const data = doc.data();
-      console.log(`Retrieved call details from Firebase for call ${callId}`);
-      return {
-        from: data.from || "",
-        to: data.to || ""
-      };
-    } else {
-      console.log(`No call details found in Firebase for call ${callId}`);
+    if (!callId) {
+      console.log("No callId provided for retrieval");
       return null;
     }
+    
+    try {
+      const initialized = initializeFirebase();
+      
+      if (!initialized) {
+        console.log("Firebase not initialized, using backup storage");
+        return await getFromTempFile(callId);
+      }
+      
+      console.log(`Attempting to retrieve call details from Firebase for call ID: ${callId}`);
+      const db = admin.firestore();
+      
+      const doc = await db.collection('callDetails').doc(callId).get();
+      
+      if (doc.exists) {
+        const data = doc.data();
+        console.log(`Successfully retrieved call details from Firebase for call ${callId}`);
+        return {
+          from: data.from || "",
+          to: data.to || "",
+          isCapitalOne: data.isCapitalOne || false
+        };
+      } else {
+        console.log(`No call details found in Firebase for call ${callId}, trying backup`);
+        return await getFromTempFile(callId);
+      }
+    } catch (error) {
+      console.error("Error retrieving from Firebase, trying backup:", error);
+      return await getFromTempFile(callId);
+    }
   } catch (error) {
-    console.error("Error retrieving call details from Firebase:", error);
+    console.error("Error retrieving call details:", error);
     return null;
   }
 }
@@ -121,9 +212,11 @@ exports.handler = async function(event, context) {
       
       // Store these details in both in-memory cache and Firebase
       callDetailsStore[callId] = phoneNumbers;
-      await storeCallDetailsInFirebase(callId, phoneNumbers);
+      const storedSuccessfully = await storeCallDetailsInFirebase(callId, phoneNumbers);
       
       console.log(`Storing phone numbers for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
+      console.log(`Stored successfully: ${storedSuccessfully ? 'Yes' : 'No'}`);
+      
     } else {
       // First try in-memory cache (for same execution context)
       if (callId && callDetailsStore[callId]) {
@@ -131,12 +224,19 @@ exports.handler = async function(event, context) {
         console.log(`Retrieved phone numbers from memory for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
       } else {
         // If not in memory, try Firebase
+        console.log(`Call details not found in memory for call ${callId}, trying Firebase...`);
         const firebasePhoneNumbers = await getCallDetailsFromFirebase(callId);
+        
         if (firebasePhoneNumbers) {
           phoneNumbers = firebasePhoneNumbers;
           // Also store in memory for future use in this execution
           callDetailsStore[callId] = phoneNumbers;
           console.log(`Retrieved phone numbers from Firebase for call ${callId}: From: ${phoneNumbers.from}, To: ${phoneNumbers.to}`);
+          
+          // Direct Capital One detection
+          if (firebasePhoneNumbers.isCapitalOne) {
+            console.log("Capital One call detected from Firebase data");
+          }
         } else {
           console.log(`No stored phone numbers found for call ${callId} in memory or Firebase`);
         }
@@ -148,7 +248,8 @@ exports.handler = async function(event, context) {
     // Default to fallback contact ID
     let contactId = process.env.FALLBACK_CONTACT_ID;
     
-    // Special case for Capital One: Use direct ID match
+    // IMPORTANT: Special case for Capital One (hardcoded solution)
+    // This direct check ensures Capital One calls are always routed correctly
     if (phoneNumbers.to === "+18884640727" || phoneNumbers.from === "+18884640727") {
       // Use Capital One contact ID
       contactId = "cea99ef5-c1e1-4ad5-a73a-bd74144e71a6"; // Hardcoded Capital One contact ID
@@ -406,6 +507,7 @@ async function handleSummary(payload, contactId) {
     const summaryData = payload.data?.object || {};
     const summaryPoints = summaryData.summary || [];
     const nextSteps = summaryData.nextSteps || [];
+    const callId = summaryData.callId || "";
     
     // Format the summary as a string
     let formattedSummary = "No summary available";
@@ -418,7 +520,6 @@ async function handleSummary(payload, contactId) {
     }
     
     const callDate = new Date(payload.createdAt || Date.now()).toLocaleString();
-    const callId = summaryData.callId || "";
     
     // Create the note details with the summary information
     const noteDetails = `
@@ -443,6 +544,7 @@ async function handleTranscript(payload, contactId) {
     // Extract the transcript details from the OpenPhone payload structure
     const transcriptData = payload.data?.object || {};
     const dialogueSegments = transcriptData.dialogue || [];
+    const callId = transcriptData.callId || "";
     
     // Format the transcript
     let formattedTranscript = "No transcript content";
@@ -456,7 +558,6 @@ async function handleTranscript(payload, contactId) {
     }
     
     const callDate = new Date(transcriptData.createdAt || Date.now()).toLocaleString();
-    const callId = transcriptData.callId || "";
     
     // Create the note details with the transcript information
     const noteDetails = `
@@ -496,7 +597,7 @@ async function createNote(contactId, details) {
     const response = await fetch("https://logon.salesnexus.com/api/call-v1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(notePayload)
+      body: JSON.stringify(notePayload)  // FIXED: Was using searchPayload before
     });
     
     const result = await response.json();
