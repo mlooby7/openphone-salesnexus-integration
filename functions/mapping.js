@@ -1,16 +1,54 @@
-// functions/mapping.js
 const admin = require('firebase-admin');
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
-// Initialize Firebase Admin SDK if not already initialized
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+// Improved Firebase initialization with better error handling
+let db = null;
+
+function initializeFirebase() {
+  try {
+    // Check if already initialized
+    if (admin.apps.length > 0) {
+      db = admin.firestore();
+      return true;
+    }
+
+    // Parse service account with better error handling
+    let serviceAccount;
+    try {
+      if (typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string') {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      } else {
+        serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+      }
+    } catch (parseError) {
+      console.error('Error parsing FIREBASE_SERVICE_ACCOUNT:', parseError);
+      throw new Error('Invalid FIREBASE_SERVICE_ACCOUNT format');
+    }
+
+    // Validate required fields
+    if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+      throw new Error('Missing required fields in service account');
+    }
+
+    // Initialize Firebase Admin
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      projectId: serviceAccount.project_id
+    });
+
+    db = admin.firestore();
+    console.log('Firebase initialized successfully');
+    return true;
+
+  } catch (error) {
+    console.error('Firebase initialization failed:', error);
+    console.error('Environment check:', {
+      hasServiceAccount: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      serviceAccountLength: process.env.FIREBASE_SERVICE_ACCOUNT ? process.env.FIREBASE_SERVICE_ACCOUNT.length : 0,
+      hasProjectId: !!process.env.FIREBASE_PROJECT_ID
+    });
+    return false;
+  }
 }
-
-const db = admin.firestore();
-const mappingsCollection = db.collection('phoneEmailMappings');
 
 exports.handler = async function(event, context) {
   // Set CORS headers
@@ -28,26 +66,35 @@ exports.handler = async function(event, context) {
     };
   }
 
+  // Initialize Firebase
+  if (!initializeFirebase()) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ 
+        error: 'Firebase initialization failed',
+        message: 'Check server logs for configuration issues'
+      })
+    };
+  }
+
   try {
     const path = event.path.replace('/.netlify/functions/mapping', '');
     const segments = path.split('/').filter(segment => segment);
     const method = event.httpMethod;
 
+    console.log(`Processing ${method} request to path: ${path}`);
+
     // Route based on path and method
     if (method === 'GET' && segments.length === 0) {
-      // Get all mappings or search
       return await getMappings(event, headers);
     } else if (method === 'GET' && segments.length === 1) {
-      // Get mapping by phone number
       return await getMappingByPhone(segments[0], headers);
     } else if (method === 'POST' && segments.length === 0) {
-      // Create/update mapping
       return await saveMappings(event, headers);
     } else if (method === 'DELETE' && segments.length === 1) {
-      // Delete mapping
       return await deleteMapping(segments[0], headers);
     } else if (method === 'POST' && segments[0] === 'lookup') {
-      // Lookup email by phone number (used by webhook handler)
       return await lookupEmailByPhone(event, headers);
     } else {
       return {
@@ -61,7 +108,11 @@ exports.handler = async function(event, context) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to process request', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to process request', 
+        message: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      })
     };
   }
 };
@@ -97,6 +148,9 @@ async function getMappings(event, headers) {
   const { search, limit = 25, startAfter } = event.queryStringParameters || {};
   
   try {
+    console.log('Getting mappings from Firestore...');
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
     let query = mappingsCollection.orderBy('phoneNumber');
     
     if (startAfter) {
@@ -106,6 +160,7 @@ async function getMappings(event, headers) {
     query = query.limit(parseInt(limit));
     
     const snapshot = await query.get();
+    console.log(`Retrieved ${snapshot.size} documents from Firestore`);
     
     const results = [];
     snapshot.forEach(doc => {
@@ -129,7 +184,11 @@ async function getMappings(event, headers) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to get mappings', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to get mappings', 
+        message: error.message,
+        code: error.code
+      })
     };
   }
 }
@@ -137,6 +196,9 @@ async function getMappings(event, headers) {
 // Get mapping by phone number
 async function getMappingByPhone(phoneNumber, headers) {
   try {
+    console.log(`Getting mapping for phone: ${phoneNumber}`);
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
     const doc = await mappingsCollection.doc(phoneNumber).get();
     
     if (!doc.exists) {
@@ -157,7 +219,11 @@ async function getMappingByPhone(phoneNumber, headers) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to get mapping', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to get mapping', 
+        message: error.message,
+        code: error.code
+      })
     };
   }
 }
@@ -165,8 +231,12 @@ async function getMappingByPhone(phoneNumber, headers) {
 // Save one or more mappings
 async function saveMappings(event, headers) {
   try {
+    console.log('Saving mappings...');
+    
     const body = JSON.parse(event.body);
     const mappings = Array.isArray(body) ? body : [body];
+    
+    console.log(`Processing ${mappings.length} mappings`);
     
     // Validate mappings
     for (const mapping of mappings) {
@@ -182,7 +252,7 @@ async function saveMappings(event, headers) {
         return {
           statusCode: 400,
           headers,
-          body: JSON.stringify({ error: 'Invalid email format' })
+          body: JSON.stringify({ error: `Invalid email format: ${mapping.email}` })
         };
       }
       
@@ -200,6 +270,7 @@ async function saveMappings(event, headers) {
     
     // Save mappings in batch
     const batch = db.batch();
+    const mappingsCollection = db.collection('phoneEmailMappings');
     
     for (const mapping of mappings) {
       const docRef = mappingsCollection.doc(mapping.phoneNumber);
@@ -211,6 +282,7 @@ async function saveMappings(event, headers) {
     }
     
     await batch.commit();
+    console.log(`Successfully saved ${mappings.length} mappings`);
     
     return {
       statusCode: 200,
@@ -222,7 +294,11 @@ async function saveMappings(event, headers) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to save mappings', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to save mappings', 
+        message: error.message,
+        code: error.code
+      })
     };
   }
 }
@@ -230,6 +306,9 @@ async function saveMappings(event, headers) {
 // Delete mapping by phone number
 async function deleteMapping(phoneNumber, headers) {
   try {
+    console.log(`Deleting mapping for phone: ${phoneNumber}`);
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
     await mappingsCollection.doc(phoneNumber).delete();
     
     return {
@@ -242,7 +321,11 @@ async function deleteMapping(phoneNumber, headers) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to delete mapping', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to delete mapping', 
+        message: error.message,
+        code: error.code
+      })
     };
   }
 }
@@ -270,6 +353,9 @@ async function lookupEmailByPhone(event, headers) {
       };
     }
     
+    console.log(`Looking up email for phone: ${formattedPhone}`);
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
     const doc = await mappingsCollection.doc(formattedPhone).get();
     
     if (!doc.exists) {
@@ -290,7 +376,11 @@ async function lookupEmailByPhone(event, headers) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: 'Failed to lookup email', message: error.message })
+      body: JSON.stringify({ 
+        error: 'Failed to lookup email', 
+        message: error.message,
+        code: error.code
+      })
     };
   }
 }
