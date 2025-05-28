@@ -145,7 +145,7 @@ function isValidEmail(email) {
 
 // Get all mappings with optional search filter
 async function getMappings(event, headers) {
-  const { search, limit = 25, startAfter } = event.queryStringParameters || {};
+  const { search, limit = 10000, startAfter } = event.queryStringParameters || {};
   
   try {
     console.log('Getting mappings from Firestore...');
