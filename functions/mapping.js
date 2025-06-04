@@ -239,7 +239,14 @@ async function getFrontendMappings(body, headers) {
     console.log('Getting mappings from Firestore for frontend...');
     
     const mappingsCollection = db.collection('phoneEmailMappings');
-    const query = mappingsCollection.limit(10000);
+    let query = mappingsCollection.orderBy('phoneNumber');
+    
+    // If search is provided, limit results for performance
+    if (search) {
+      query = query.limit(1000);
+    } else {
+      query = query.limit(10000);
+    }
     
     const snapshot = await query.get();
     console.log(`Retrieved ${snapshot.size} documents from Firestore`);
@@ -253,19 +260,23 @@ async function getFrontendMappings(body, headers) {
     });
     
     // Filter by search if provided
-    if (search) {
+    if (search && search.trim()) {
+      const searchTerm = search.toLowerCase().trim();
       results = results.filter(mapping => 
-        mapping.phoneNumber.toLowerCase().includes(search.toLowerCase()) || 
-        mapping.email.toLowerCase().includes(search.toLowerCase()) ||
-        (mapping.contactName && mapping.contactName.toLowerCase().includes(search.toLowerCase())) ||
-        (mapping.companyName && mapping.companyName.toLowerCase().includes(search.toLowerCase()))
+        (mapping.phoneNumber && mapping.phoneNumber.toLowerCase().includes(searchTerm)) || 
+        (mapping.email && mapping.email.toLowerCase().includes(searchTerm)) ||
+        (mapping.contactName && mapping.contactName.toLowerCase().includes(searchTerm)) ||
+        (mapping.companyName && mapping.companyName.toLowerCase().includes(searchTerm))
       );
     }
     
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ mappings: results })
+      body: JSON.stringify({ 
+        mappings: results,
+        totalCount: results.length 
+      })
     };
   } catch (error) {
     console.error('Error getting frontend mappings:', error);
