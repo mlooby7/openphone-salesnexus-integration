@@ -253,7 +253,7 @@
                 <input type="text" id="searchInput" placeholder="🔍 Search by phone number, email, name, or company..." oninput="searchMappings()">
             </div>
             <button onclick="loadMappings()">📋 Load All Mappings</button>
-            <button onclick="clearMappingsList()" class="warning">🗑️ Clear List</button>
+            <button onclick="clearAllMappings()" class="danger">🗑️ Clear All Database</button>
             
             <div id="mappingsCount" style="margin: 15px 0; font-weight: bold;"></div>
             <div id="mappingsList"></div>
@@ -387,18 +387,17 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        action: 'add',
+                        action: 'addMapping',
                         phoneNumber,
                         email: emailAddress,
                         contactName,
-                        companyName,
-                        phoneType: 'Manual Entry'
+                        companyName
                     })
                 });
 
                 const data = await response.json();
 
-                if (response.ok && data.success) {
+                if (response.ok) {
                     showMessage('addContactMessage', `✅ Successfully added mapping: ${phoneNumber} → ${emailAddress}`, 'success');
                     // Clear form
                     document.getElementById('phoneNumber').value = '';
@@ -431,14 +430,14 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        action: 'upload',
-                        csvContent: csvData
+                        action: 'uploadMappings',
+                        csvData: csvData
                     })
                 });
 
                 const data = await response.json();
 
-                if (response.ok && data.success) {
+                if (response.ok) {
                     showMessage('uploadMessage', `✅ ${data.message}`, 'success');
                     clearCSV();
                     refreshStats();
@@ -464,7 +463,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        action: 'get',
+                        action: 'getMappings',
                         search: ''
                     })
                 });
@@ -494,13 +493,46 @@
             }
 
             const filteredMappings = currentMappings.filter(mapping => {
-                return mapping.phoneNumber.toLowerCase().includes(searchTerm) ||
-                       mapping.email.toLowerCase().includes(searchTerm) ||
+                return (mapping.phoneNumber && mapping.phoneNumber.toLowerCase().includes(searchTerm)) ||
+                       (mapping.email && mapping.email.toLowerCase().includes(searchTerm)) ||
                        (mapping.contactName && mapping.contactName.toLowerCase().includes(searchTerm)) ||
                        (mapping.companyName && mapping.companyName.toLowerCase().includes(searchTerm));
             });
 
             displayMappings(filteredMappings);
+        }
+
+        async function clearAllMappings() {
+            if (!confirm('⚠️ Are you sure you want to delete ALL mappings from the database? This cannot be undone!')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/.netlify/functions/mapping', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'clearMappings'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('uploadMessage', `✅ ${data.message}`, 'success');
+                    currentMappings = [];
+                    document.getElementById('mappingsList').innerHTML = '';
+                    document.getElementById('mappingsCount').textContent = '';
+                    refreshStats();
+                } else {
+                    throw new Error(data.error || 'Failed to clear mappings');
+                }
+            } catch (error) {
+                console.error('Clear mappings error:', error);
+                showMessage('uploadMessage', `❌ Error: ${error.message}`, 'error');
+            }
         }
 
         function displayMappings(mappings) {
@@ -533,13 +565,6 @@
             }).join('');
 
             mappingsList.innerHTML = mappingsHTML;
-        }
-
-        function clearMappingsList() {
-            document.getElementById('mappingsList').innerHTML = '';
-            document.getElementById('mappingsCount').textContent = '';
-            document.getElementById('searchInput').value = '';
-            currentMappings = [];
         }
 
         function showMessage(elementId, message, type) {
