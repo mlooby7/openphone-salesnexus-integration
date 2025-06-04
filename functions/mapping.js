@@ -83,10 +83,132 @@ exports.handler = async (event, context) => {
 
     try {
         const path = event.path.replace('/.netlify/functions/mapping', '') || '/';
+        const body = event.body ? JSON.parse(event.body) : {};
         
         console.log(`Processing ${event.httpMethod} request to path: ${path}`);
+        console.log('Request body:', body);
 
-        // GET /all - Get all mappings (with limit of 10000)
+        // Handle root path requests (from your original frontend)
+        if (path === '/' && event.httpMethod === 'POST') {
+            const { action } = body;
+            
+            // Add mapping action
+            if (action === 'add') {
+                const { phoneNumber, email, contactName = '', companyName = '', phoneType = 'Manual Entry' } = body;
+                const formattedPhone = formatPhoneNumber(phoneNumber);
+                
+                if (!formattedPhone || !email) {
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ error: 'Phone number and email are required' })
+                    };
+                }
+                
+                await db.collection('phoneEmailMappings').doc(formattedPhone).set({
+                    phoneNumber: formattedPhone,
+                    email,
+                    contactName,
+                    companyName,
+                    phoneType,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                
+                console.log(`Added mapping: ${formattedPhone} -> ${email}`);
+                return {
+                    statusCode: 200,
+                    headers,
+                    body: JSON.stringify({ 
+                        success: true,
+                        message: `Successfully added mapping for ${formattedPhone}` 
+                    })
+                };
+            }
+            
+            // Upload CSV action
+            if (action === 'upload') {
+                const { csvContent } = body;
+                
+                if (!csvContent) {
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ error: 'CSV content is required' })
+                    };
+                }
+                
+                const mappings = parseCSV(csvContent);
+                
+                if (mappings.length === 0) {
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ error: 'No valid mappings found in the CSV' })
+                    };
+                }
+                
+                // Use batch operations for better performance
+                const batch = db.batch();
+                
+                mappings.forEach(mapping => {
+                    const docRef = db.collection('phoneEmailMappings').doc(mapping.phoneNumber);
+                    batch.set(docRef, {
+                        ...mapping,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                });
+                
+                await batch.commit();
+                
+                console.log(`Successfully uploaded ${mappings.length} mappings`);
+                return {
+                    statusCode: 200,
+                    headers,
+                    body: JSON.stringify({ 
+                        success: true, 
+                        count: mappings.length,
+                        message: `Successfully uploaded ${mappings.length} phone-to-email mappings`
+                    })
+                };
+            }
+            
+            // Get mappings action  
+            if (action === 'get') {
+                const { search = '' } = body;
+                let query = db.collection('phoneEmailMappings').limit(10000);
+                
+                const snapshot = await query.get();
+                let mappings = [];
+                
+                snapshot.forEach(doc => {
+                    mappings.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                
+                // Filter by search if provided
+                if (search) {
+                    mappings = mappings.filter(mapping => 
+                        mapping.phoneNumber.includes(search) || 
+                        mapping.email.toLowerCase().includes(search.toLowerCase()) ||
+                        (mapping.contactName && mapping.contactName.toLowerCase().includes(search.toLowerCase())) ||
+                        (mapping.companyName && mapping.companyName.toLowerCase().includes(search.toLowerCase()))
+                    );
+                }
+                
+                console.log(`Retrieved ${mappings.length} mappings (search: "${search}")`);
+                return {
+                    statusCode: 200,
+                    headers,
+                    body: JSON.stringify({ mappings })
+                };
+            }
+        }
+
+        // GET /all - Get all mappings (for diagnostic)
         if (event.httpMethod === 'GET' && path === '/all') {
             const snapshot = await db.collection('phoneEmailMappings').limit(10000).get();
             const mappings = [];
@@ -106,7 +228,7 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // GET /count - Get count of all mappings
+        // GET /count - Get count of all mappings (for diagnostic)
         if (event.httpMethod === 'GET' && path === '/count') {
             const snapshot = await db.collection('phoneEmailMappings').count().get();
             const count = snapshot.data().count;
@@ -119,7 +241,7 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // GET /sample - Get sample records for structure checking
+        // GET /sample - Get sample records for structure checking (for diagnostic)
         if (event.httpMethod === 'GET' && path === '/sample') {
             const snapshot = await db.collection('phoneEmailMappings').limit(3).get();
             const samples = [];
@@ -139,7 +261,7 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // GET /phones - Get all phone numbers for testing
+        // GET /phones - Get all phone numbers for testing (for diagnostic)
         if (event.httpMethod === 'GET' && path === '/phones') {
             const snapshot = await db.collection('phoneEmailMappings').limit(100).get();
             const phones = [];
@@ -161,7 +283,7 @@ exports.handler = async (event, context) => {
 
         // POST /lookup - Look up email by phone number
         if (event.httpMethod === 'POST' && path === '/lookup') {
-            const { phoneNumber } = JSON.parse(event.body);
+            const { phoneNumber } = body;
             const formattedPhone = formatPhoneNumber(phoneNumber);
             
             console.log(`Looking up email for phone: ${formattedPhone}`);
@@ -191,9 +313,9 @@ exports.handler = async (event, context) => {
             }
         }
 
-        // POST /add - Add single mapping
+        // POST /add - Add single mapping (alternative endpoint)
         if (event.httpMethod === 'POST' && path === '/add') {
-            const { phoneNumber, email, contactName, companyName, phoneType } = JSON.parse(event.body);
+            const { phoneNumber, email, contactName, companyName, phoneType } = body;
             const formattedPhone = formatPhoneNumber(phoneNumber);
             
             if (!formattedPhone || !email) {
@@ -210,7 +332,8 @@ exports.handler = async (event, context) => {
                 contactName: contactName || '',
                 companyName: companyName || '',
                 phoneType: phoneType || 'Manual Entry',
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
             });
             
             console.log(`Added mapping: ${formattedPhone} -> ${email}`);
@@ -221,9 +344,9 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // POST /upload - Upload CSV mappings
+        // POST /upload - Upload CSV mappings (alternative endpoint)
         if (event.httpMethod === 'POST' && path === '/upload') {
-            const { csvContent } = JSON.parse(event.body);
+            const { csvContent } = body;
             
             if (!csvContent) {
                 return {
@@ -250,7 +373,8 @@ exports.handler = async (event, context) => {
                 const docRef = db.collection('phoneEmailMappings').doc(mapping.phoneNumber);
                 batch.set(docRef, {
                     ...mapping,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
             });
             
@@ -295,7 +419,11 @@ exports.handler = async (event, context) => {
         return {
             statusCode: 404,
             headers,
-            body: JSON.stringify({ error: `Path not found: ${path}` })
+            body: JSON.stringify({ 
+                error: `Path not found: ${path}`,
+                method: event.httpMethod,
+                availablePaths: ['/', '/lookup', '/add', '/upload', '/all', '/count', '/sample', '/phones', '/clear']
+            })
         };
 
     } catch (error) {
