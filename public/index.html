@@ -485,22 +485,44 @@
             }
         }
 
-        function searchMappings() {
-            const searchTerm = document.getElementById('searchInput').value.trim().toLowerCase();
+        async function searchMappings() {
+            const searchTerm = document.getElementById('searchInput').value.trim();
             
             if (!searchTerm) {
-                displayMappings(currentMappings);
+                document.getElementById('mappingsList').innerHTML = '';
+                document.getElementById('mappingsCount').textContent = '';
                 return;
             }
 
-            const filteredMappings = currentMappings.filter(mapping => {
-                return (mapping.phoneNumber && mapping.phoneNumber.toLowerCase().includes(searchTerm)) ||
-                       (mapping.email && mapping.email.toLowerCase().includes(searchTerm)) ||
-                       (mapping.contactName && mapping.contactName.toLowerCase().includes(searchTerm)) ||
-                       (mapping.companyName && mapping.companyName.toLowerCase().includes(searchTerm));
-            });
+            document.getElementById('mappingsLoading').style.display = 'block';
 
-            displayMappings(filteredMappings);
+            try {
+                const response = await fetch('/.netlify/functions/mapping', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'getMappings',
+                        search: searchTerm
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.mappings) {
+                    currentMappings = data.mappings;
+                    displayMappings(currentMappings);
+                } else {
+                    throw new Error(data.error || 'Failed to search mappings');
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                document.getElementById('mappingsList').innerHTML = `<div class="message error">❌ Error searching: ${error.message}</div>`;
+                document.getElementById('mappingsCount').textContent = '';
+            } finally {
+                document.getElementById('mappingsLoading').style.display = 'none';
+            }
         }
 
         function displayMappings(mappings) {
