@@ -98,17 +98,17 @@ exports.handler = async function(event, context) {
       }
     }
     
-    // Route based on path and method
-    if (method === 'GET' && segments.length === 0) {
+    // Route based on path and method - check specific endpoints first
+    if (method === 'GET' && segments[0] === 'count') {
+      return await getCount(headers);
+    } else if (method === 'POST' && segments[0] === 'lookup') {
+      return await lookupEmailByPhone(event, headers);
+    } else if (method === 'GET' && segments.length === 0) {
       return await getMappings(event, headers);
     } else if (method === 'GET' && segments.length === 1) {
       return await getMappingByPhone(segments[0], headers);
     } else if (method === 'DELETE' && segments.length === 1) {
       return await deleteMapping(segments[0], headers);
-    } else if (method === 'POST' && segments[0] === 'lookup') {
-      return await lookupEmailByPhone(event, headers);
-    } else if (method === 'GET' && segments[0] === 'count') {
-      return await getCount(headers);
     } else {
       return {
         statusCode: 404,
