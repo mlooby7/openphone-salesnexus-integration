@@ -253,7 +253,7 @@
                 <input type="text" id="searchInput" placeholder="🔍 Search by phone number, email, name, or company..." oninput="searchMappings()">
             </div>
             <button onclick="loadMappings()">📋 Load All Mappings</button>
-            <button onclick="clearAllMappings()" class="danger">🗑️ Clear All Database</button>
+            <button onclick="clearMappingsList()" class="warning">🗑️ Clear List</button>
             
             <div id="mappingsCount" style="margin: 15px 0; font-weight: bold;"></div>
             <div id="mappingsList"></div>
@@ -391,7 +391,8 @@
                         phoneNumber,
                         email: emailAddress,
                         contactName,
-                        companyName
+                        companyName,
+                        phoneType: 'Manual Entry'
                     })
                 });
 
@@ -502,39 +503,6 @@
             displayMappings(filteredMappings);
         }
 
-        async function clearAllMappings() {
-            if (!confirm('⚠️ Are you sure you want to delete ALL mappings from the database? This cannot be undone!')) {
-                return;
-            }
-
-            try {
-                const response = await fetch('/.netlify/functions/mapping', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        action: 'clearMappings'
-                    })
-                });
-
-                const data = await response.json();
-
-                if (response.ok) {
-                    showMessage('uploadMessage', `✅ ${data.message}`, 'success');
-                    currentMappings = [];
-                    document.getElementById('mappingsList').innerHTML = '';
-                    document.getElementById('mappingsCount').textContent = '';
-                    refreshStats();
-                } else {
-                    throw new Error(data.error || 'Failed to clear mappings');
-                }
-            } catch (error) {
-                console.error('Clear mappings error:', error);
-                showMessage('uploadMessage', `❌ Error: ${error.message}`, 'error');
-            }
-        }
-
         function displayMappings(mappings) {
             const mappingsList = document.getElementById('mappingsList');
             const mappingsCount = document.getElementById('mappingsCount');
@@ -565,6 +533,13 @@
             }).join('');
 
             mappingsList.innerHTML = mappingsHTML;
+        }
+
+        function clearMappingsList() {
+            document.getElementById('mappingsList').innerHTML = '';
+            document.getElementById('mappingsCount').textContent = '';
+            document.getElementById('searchInput').value = '';
+            currentMappings = [];
         }
 
         function showMessage(elementId, message, type) {
