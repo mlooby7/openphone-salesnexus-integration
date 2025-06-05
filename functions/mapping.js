@@ -1,442 +1,386 @@
 const admin = require('firebase-admin');
 
-// Initialize Firebase Admin (only once)
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      type: "service_account",
-      project_id: process.env.FIREBASE_PROJECT_ID,
-      private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-      private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      client_email: process.env.FIREBASE_CLIENT_EMAIL,
-      client_id: process.env.FIREBASE_CLIENT_ID,
-      auth_uri: "https://accounts.google.com/o/oauth2/auth",
-      token_uri: "https://oauth2.googleapis.com/token",
-      auth_provider_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-b8gbi%40sweet-liger-902232.iam.gserviceaccount.com",
-      client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${process.env.FIREBASE_CLIENT_EMAIL}`
-    })
-  });
-}
+// Improved Firebase initialization with better error handling
+let db = null;
 
-const db = admin.firestore();
+function initializeFirebase() {
+  try {
+    // Check if already initialized
+    if (admin.apps.length > 0) {
+      db = admin.firestore();
+      return true;
+    }
 
-function cleanPhoneNumber(phone) {
-  if (!phone) return '';
-  return phone.replace(/[\s\-\(\)\.]/g, '');
-}
+    // Parse service account with better error handling
+    let serviceAccount;
+    try {
+      if (typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string') {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      } else {
+        serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+      }
+    } catch (parseError) {
+      console.error('Error parsing FIREBASE_SERVICE_ACCOUNT:', parseError);
+      throw new Error('Invalid FIREBASE_SERVICE_ACCOUNT format');
+    }
 
-function formatPhoneForE164(phone) {
-  const cleaned = cleanPhoneNumber(phone);
-  if (cleaned.startsWith('+')) return cleaned;
-  if (cleaned.startsWith('1') && cleaned.length === 11) return `+${cleaned}`;
-  if (cleaned.length === 10) return `+1${cleaned}`;
-  return `+${cleaned}`;
-}
+    // Validate required fields
+    if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+      throw new Error('Missing required fields in service account');
+    }
 
-// Helper function to normalize phone numbers for comparison
-function normalizePhoneForLookup(phone) {
-  if (!phone) return '';
-  
-  // Remove all formatting
-  const digitsOnly = phone.replace(/\D/g, '');
-  
-  // If it starts with 1 and has 11 digits, remove the 1
-  if (digitsOnly.startsWith('1') && digitsOnly.length === 11) {
-    return digitsOnly.substring(1);
+    // Initialize Firebase Admin
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      projectId: serviceAccount.project_id
+    });
+
+    db = admin.firestore();
+    console.log('Firebase initialized successfully');
+    return true;
+
+  } catch (error) {
+    console.error('Firebase initialization failed:', error);
+    console.error('Environment check:', {
+      hasServiceAccount: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      serviceAccountLength: process.env.FIREBASE_SERVICE_ACCOUNT ? process.env.FIREBASE_SERVICE_ACCOUNT.length : 0,
+      hasProjectId: !!process.env.FIREBASE_PROJECT_ID
+    });
+    return false;
   }
-  
-  // If it has 10 digits, return as is
-  if (digitsOnly.length === 10) {
-    return digitsOnly;
-  }
-  
-  return digitsOnly;
 }
 
-// Get mapping for webhook lookup (OpenPhone webhook calls this)
-async function getEmailMapping(body, headers) {
-  const { phoneNumber } = body;
-  
-  if (!phoneNumber) {
+exports.handler = async function(event, context) {
+  // Set CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, DELETE'
+  };
+
+  // Handle preflight requests
+  if (event.httpMethod === 'OPTIONS') {
     return {
-      statusCode: 400,
-      headers,
-      body: JSON.stringify({ error: 'Phone number is required' })
+      statusCode: 204,
+      headers
     };
   }
 
-  try {
-    console.log(`Looking up phone number: ${phoneNumber}`);
-    
-    // Normalize the incoming phone number
-    const normalizedIncoming = normalizePhoneForLookup(phoneNumber);
-    console.log(`Normalized incoming: ${normalizedIncoming}`);
-    
-    // Get all mappings from Firestore
-    const mappingsCollection = db.collection('phoneEmailMappings');
-    const snapshot = await mappingsCollection.get();
-    
-    console.log(`Retrieved ${snapshot.size} documents from Firestore`);
-    
-    // Search through all mappings for a match
-    let foundMapping = null;
-    
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      const storedPhone = data.phoneNumber;
-      const normalizedStored = normalizePhoneForLookup(storedPhone);
-      
-      console.log(`Comparing ${normalizedIncoming} with stored ${normalizedStored} (original: ${storedPhone})`);
-      
-      if (normalizedIncoming === normalizedStored) {
-        foundMapping = data;
-        console.log(`Found match! Email: ${data.email}`);
-      }
-    });
-    
-    if (foundMapping) {
-      console.log(`Found email mapping: ${foundMapping.email} for phone: ${phoneNumber}`);
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ 
-          email: foundMapping.email,
-          contactName: foundMapping.contactName || '',
-          companyName: foundMapping.companyName || ''
-        })
-      };
-    } else {
-      console.log(`No mapping found for phone: ${phoneNumber}`);
-      return {
-        statusCode: 404,
-        headers,
-        body: JSON.stringify({ error: 'No mapping found' })
-      };
-    }
-    
-  } catch (error) {
-    console.error('Error looking up mapping:', error);
+  // Initialize Firebase
+  if (!initializeFirebase()) {
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ 
-        error: 'Failed to lookup mapping', 
-        message: error.message
+        error: 'Firebase initialization failed',
+        message: 'Check server logs for configuration issues'
       })
     };
   }
+
+  try {
+    const path = event.path.replace('/.netlify/functions/mapping', '');
+    const segments = path.split('/').filter(segment => segment);
+    const method = event.httpMethod;
+
+    console.log(`Processing ${method} request to path: ${path}`);
+
+    // Route based on path and method
+    if (method === 'GET' && segments.length === 0) {
+      return await getMappings(event, headers);
+    } else if (method === 'GET' && segments.length === 1) {
+      return await getMappingByPhone(segments[0], headers);
+    } else if (method === 'POST' && segments.length === 0) {
+      return await saveMappings(event, headers);
+    } else if (method === 'DELETE' && segments.length === 1) {
+      return await deleteMapping(segments[0], headers);
+    } else if (method === 'POST' && segments[0] === 'lookup') {
+      return await lookupEmailByPhone(event, headers);
+    } else {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ error: 'Route not found' })
+      };
+    }
+  } catch (error) {
+    console.error('Error in router:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ 
+        error: 'Failed to process request', 
+        message: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      })
+    };
+  }
+};
+
+// Format phone number to E.164 format
+function formatPhoneNumber(phone) {
+  if (!phone) return null;
+  
+  // Remove all non-digit characters
+  let digits = phone.replace(/\D/g, '');
+  
+  // Add country code if missing
+  if (digits.length === 10) {
+    digits = '1' + digits; // Assume US number
+  }
+  
+  // Validate length (assuming international format)
+  if (digits.length < 10 || digits.length > 15) {
+    return null;
+  }
+  
+  return '+' + digits;
 }
 
-// Get mappings for frontend display
-async function getFrontendMappings(body, headers) {
-  const { search = '' } = body;
+// Validate email format
+function isValidEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+// Get all mappings with optional search filter
+async function getMappings(event, headers) {
+  const { search, limit = 10000, startAfter } = event.queryStringParameters || {};
   
   try {
-    console.log('Getting mappings from Firestore for frontend...');
+    console.log('Getting mappings from Firestore...');
     
     const mappingsCollection = db.collection('phoneEmailMappings');
-    const snapshot = await mappingsCollection.get();
+    let query = mappingsCollection.orderBy('phoneNumber');
     
+    if (startAfter) {
+      query = query.startAfter(startAfter);
+    }
+    
+    query = query.limit(parseInt(limit));
+    
+    const snapshot = await query.get();
     console.log(`Retrieved ${snapshot.size} documents from Firestore`);
     
-    let results = [];
+    const results = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      results.push({
-        id: doc.id,
-        phoneNumber: data.phoneNumber,
-        email: data.email,
-        contactName: data.contactName || '',
-        companyName: data.companyName || ''
-      });
+      // If search is provided, filter results client-side
+      if (!search || data.phoneNumber.includes(search) || data.email.includes(search)) {
+        results.push(data);
+      }
     });
-    
-    // Apply search filter if provided
-    if (search && search.trim()) {
-      const searchTerm = search.toLowerCase().trim();
-      results = results.filter(mapping => {
-        return (
-          (mapping.phoneNumber && mapping.phoneNumber.toLowerCase().includes(searchTerm)) ||
-          (mapping.email && mapping.email.toLowerCase().includes(searchTerm)) ||
-          (mapping.contactName && mapping.contactName.toLowerCase().includes(searchTerm)) ||
-          (mapping.companyName && mapping.companyName.toLowerCase().includes(searchTerm))
-        );
-      });
-    }
     
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ mappings: results })
+      body: JSON.stringify({
+        mappings: results,
+        lastKey: snapshot.size > 0 ? snapshot.docs[snapshot.docs.length - 1].data().phoneNumber : null
+      })
     };
-    
   } catch (error) {
-    console.error('Error getting frontend mappings:', error);
+    console.error('Error getting mappings:', error);
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ 
         error: 'Failed to get mappings', 
-        message: error.message
+        message: error.message,
+        code: error.code
       })
     };
   }
 }
 
-// Upload CSV mappings
-async function uploadMappings(body, headers) {
-  const { csvData } = body;
-  
-  if (!csvData) {
-    return {
-      statusCode: 400,
-      headers,
-      body: JSON.stringify({ error: 'CSV data is required' })
-    };
-  }
-
+// Get mapping by phone number
+async function getMappingByPhone(phoneNumber, headers) {
   try {
-    console.log('Processing CSV data...');
+    console.log(`Getting mapping for phone: ${phoneNumber}`);
     
-    const Papa = require('papaparse');
-    const parsed = Papa.parse(csvData, {
-      header: true,
-      skipEmptyLines: true
-    });
+    const mappingsCollection = db.collection('phoneEmailMappings');
+    const doc = await mappingsCollection.doc(phoneNumber).get();
     
-    if (parsed.errors.length > 0) {
-      console.error('CSV parsing errors:', parsed.errors);
+    if (!doc.exists) {
       return {
-        statusCode: 400,
+        statusCode: 404,
         headers,
-        body: JSON.stringify({ 
-          error: 'CSV parsing failed', 
-          details: parsed.errors 
-        })
+        body: JSON.stringify({ error: 'Mapping not found' })
       };
     }
     
-    const mappingsCollection = db.collection('phoneEmailMappings');
-    const batch = db.batch();
-    
-    let validCount = 0;
-    let errors = [];
-    
-    for (const row of parsed.data) {
-      try {
-        // Flexible field mapping
-        const phoneField = row['Phone'] || row['phone'] || row['Phone Number'] || row['phone_number'];
-        const emailField = row['Email'] || row['email'] || row['Email Address'] || row['email_address'];
-        const nameField = row['Name'] || row['name'] || row['Contact Name'] || row['contact_name'] || 
-                         row['First Name'] || row['first_name'] || row['Full Name'] || row['full_name'];
-        const companyField = row['Company'] || row['company'] || row['Company Name'] || row['company_name'] ||
-                           row['Business'] || row['business'] || row['Organization'] || row['organization'];
-        
-        if (!phoneField || !emailField) {
-          errors.push(`Missing phone or email in row: ${JSON.stringify(row)}`);
-          continue;
-        }
-        
-        const formattedPhone = formatPhoneForE164(phoneField);
-        
-        // Create a document with phone number as the ID for easy lookup
-        const docRef = mappingsCollection.doc();
-        batch.set(docRef, {
-          phoneNumber: formattedPhone,
-          email: emailField.trim(),
-          contactName: nameField ? nameField.trim() : '',
-          companyName: companyField ? companyField.trim() : '',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        
-        validCount++;
-      } catch (error) {
-        errors.push(`Error processing row ${JSON.stringify(row)}: ${error.message}`);
-      }
-    }
-    
-    if (validCount === 0) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ 
-          error: 'No valid mappings found in CSV',
-          details: errors
-        })
-      };
-    }
-    
-    await batch.commit();
-    console.log(`Successfully uploaded ${validCount} mappings`);
-    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ 
-        message: `Successfully uploaded ${validCount} mappings`,
-        validCount,
-        errors: errors.length > 0 ? errors : undefined
-      })
+      body: JSON.stringify(doc.data())
     };
-    
   } catch (error) {
-    console.error('Error uploading mappings:', error);
+    console.error('Error getting mapping:', error);
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ 
-        error: 'Failed to upload mappings', 
-        message: error.message
+        error: 'Failed to get mapping', 
+        message: error.message,
+        code: error.code
       })
     };
   }
 }
 
-// Add single mapping
-async function addMapping(body, headers) {
-  const { phoneNumber, email, contactName = '', companyName = '' } = body;
-  
-  if (!phoneNumber || !email) {
-    return {
-      statusCode: 400,
-      headers,
-      body: JSON.stringify({ error: 'Phone number and email are required' })
-    };
-  }
-
+// Save one or more mappings
+async function saveMappings(event, headers) {
   try {
-    const formattedPhone = formatPhoneForE164(phoneNumber);
+    console.log('Saving mappings...');
     
-    const mappingsCollection = db.collection('phoneEmailMappings');
-    const docRef = mappingsCollection.doc();
-    
-    await docRef.set({
-      phoneNumber: formattedPhone,
-      email: email.trim(),
-      contactName: contactName.trim(),
-      companyName: companyName.trim(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    console.log(`Added mapping: ${formattedPhone} -> ${email}`);
-    
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ 
-        message: 'Mapping added successfully',
-        mapping: {
-          phoneNumber: formattedPhone,
-          email: email.trim(),
-          contactName: contactName.trim(),
-          companyName: companyName.trim()
-        }
-      })
-    };
-    
-  } catch (error) {
-    console.error('Error adding mapping:', error);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ 
-        error: 'Failed to add mapping', 
-        message: error.message
-      })
-    };
-  }
-}
-
-// Clear all mappings
-async function clearMappings(body, headers) {
-  try {
-    console.log('Clearing all mappings...');
-    
-    const mappingsCollection = db.collection('phoneEmailMappings');
-    const snapshot = await mappingsCollection.get();
-    
-    const batch = db.batch();
-    snapshot.docs.forEach(doc => {
-      batch.delete(doc.ref);
-    });
-    
-    await batch.commit();
-    console.log(`Cleared ${snapshot.size} mappings`);
-    
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ 
-        message: `Successfully cleared ${snapshot.size} mappings` 
-      })
-    };
-    
-  } catch (error) {
-    console.error('Error clearing mappings:', error);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ 
-        error: 'Failed to clear mappings', 
-        message: error.message
-      })
-    };
-  }
-}
-
-exports.handler = async (event, context) => {
-  const headers = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Content-Type': 'application/json'
-  };
-
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers, body: '' };
-  }
-
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers,
-      body: JSON.stringify({ error: 'Method not allowed' })
-    };
-  }
-
-  try {
     const body = JSON.parse(event.body);
-    const { action } = body;
-
-    switch (action) {
-      case 'getMapping':
-        return await getEmailMapping(body, headers);
-      case 'getMappings':
-        return await getFrontendMappings(body, headers);
-      case 'uploadMappings':
-        return await uploadMappings(body, headers);
-      case 'addMapping':
-        return await addMapping(body, headers);
-      case 'clearMappings':
-        return await clearMappings(body, headers);
-      default:
+    const mappings = Array.isArray(body) ? body : [body];
+    
+    console.log(`Processing ${mappings.length} mappings`);
+    
+    // Validate mappings
+    for (const mapping of mappings) {
+      if (!mapping.phoneNumber || !mapping.email) {
         return {
           statusCode: 400,
           headers,
-          body: JSON.stringify({ error: 'Invalid action' })
+          body: JSON.stringify({ error: 'Phone number and email are required for each mapping' })
         };
+      }
+      
+      if (!isValidEmail(mapping.email)) {
+        return {
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ error: `Invalid email format: ${mapping.email}` })
+        };
+      }
+      
+      // Format phone number
+      mapping.phoneNumber = formatPhoneNumber(mapping.phoneNumber);
+      
+      if (!mapping.phoneNumber) {
+        return {
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ error: 'Invalid phone number format' })
+        };
+      }
     }
+    
+    // Save mappings in batch
+    const batch = db.batch();
+    const mappingsCollection = db.collection('phoneEmailMappings');
+    
+    for (const mapping of mappings) {
+      const docRef = mappingsCollection.doc(mapping.phoneNumber);
+      batch.set(docRef, {
+        email: mapping.email,
+        phoneNumber: mapping.phoneNumber,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+    
+    await batch.commit();
+    console.log(`Successfully saved ${mappings.length} mappings`);
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ success: true, count: mappings.length })
+    };
   } catch (error) {
-    console.error('Handler error:', error);
+    console.error('Error saving mappings:', error);
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ 
-        error: 'Internal server error', 
-        message: error.message 
+        error: 'Failed to save mappings', 
+        message: error.message,
+        code: error.code
       })
     };
   }
-};
+}
+
+// Delete mapping by phone number
+async function deleteMapping(phoneNumber, headers) {
+  try {
+    console.log(`Deleting mapping for phone: ${phoneNumber}`);
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
+    await mappingsCollection.doc(phoneNumber).delete();
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ success: true })
+    };
+  } catch (error) {
+    console.error('Error deleting mapping:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ 
+        error: 'Failed to delete mapping', 
+        message: error.message,
+        code: error.code
+      })
+    };
+  }
+}
+
+// Lookup email by phone number (for webhook handler)
+async function lookupEmailByPhone(event, headers) {
+  try {
+    const { phoneNumber } = JSON.parse(event.body);
+    
+    if (!phoneNumber) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Phone number is required' })
+      };
+    }
+    
+    const formattedPhone = formatPhoneNumber(phoneNumber);
+    
+    if (!formattedPhone) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Invalid phone number format' })
+      };
+    }
+    
+    console.log(`Looking up email for phone: ${formattedPhone}`);
+    
+    const mappingsCollection = db.collection('phoneEmailMappings');
+    const doc = await mappingsCollection.doc(formattedPhone).get();
+    
+    if (!doc.exists) {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ error: 'No mapping found for this phone number' })
+      };
+    }
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ email: doc.data().email })
+    };
+  } catch (error) {
+    console.error('Error looking up email by phone:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ 
+        error: 'Failed to lookup email', 
+        message: error.message,
+        code: error.code
+      })
+    };
+  }
+}
