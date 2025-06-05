@@ -186,9 +186,15 @@
         <!-- View Mappings Tab -->
         <div id="view-mappings" class="tab-content">
             <h3>Current Mappings</h3>
-            <button onclick="loadMappings()">Refresh Mappings</button>
+            <div class="form-group">
+                <label for="searchInput">Search by phone number or email:</label>
+                <input type="text" id="searchInput" placeholder="Enter phone number or email to search..." />
+            </div>
+            <button onclick="loadMappings()">Show All Mappings</button>
+            <button onclick="searchMappings()">Search</button>
+            <button onclick="clearSearch()">Clear Search</button>
             <div id="mappingsContainer">
-                <div class="no-mappings">Click "Refresh Mappings" to load your contacts</div>
+                <div class="no-mappings">Click "Show All Mappings" to load your contacts or enter search terms above</div>
             </div>
         </div>
     </div>
@@ -412,6 +418,63 @@
                 console.error('Add contact error:', error);
                 showStatus('manualStatus', `Error: ${error.message}`, true);
             }
+        }
+
+        // Search mappings
+        async function searchMappings() {
+            const searchInput = document.getElementById('searchInput');
+            const searchTerm = searchInput.value.trim();
+            
+            if (!searchTerm) {
+                showStatus('mappingsContainer', 'Please enter a search term.', true);
+                return;
+            }
+            
+            const container = document.getElementById('mappingsContainer');
+            container.innerHTML = '<div class="loading" style="display: block;">Searching...</div>';
+            
+            try {
+                const response = await fetch(`/.netlify/functions/mapping?search=${encodeURIComponent(searchTerm)}`);
+                const result = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(result.error || `Server error: ${response.status}`);
+                }
+                
+                if (!result.mappings || result.mappings.length === 0) {
+                    container.innerHTML = `<div class="no-mappings">No contacts found matching "${searchTerm}". Try a different search term.</div>`;
+                    return;
+                }
+                
+                // Display search results
+                let html = `<div class="success">Found ${result.mappings.length} contact(s) matching "${searchTerm}"</div>`;
+                html += '<div class="mappings-container">';
+                result.mappings.forEach(mapping => {
+                    html += `
+                        <div class="mapping-item">
+                            <div class="mapping-info">
+                                <div class="phone-number">${mapping.phoneNumber}</div>
+                                <div class="email-address">${mapping.email}</div>
+                            </div>
+                            <button class="delete-btn" onclick="deleteMapping('${mapping.phoneNumber}')">Delete</button>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Search error:', error);
+                container.innerHTML = `<div class="error">Error searching contacts: ${error.message}</div>`;
+            }
+        }
+
+        // Clear search and show all mappings
+        async function clearSearch() {
+            const searchInput = document.getElementById('searchInput');
+            searchInput.value = '';
+            await loadMappings();
         }
 
         // Load and display mappings
