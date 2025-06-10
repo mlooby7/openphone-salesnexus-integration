@@ -166,7 +166,10 @@ async function getMappings(event, headers) {
     snapshot.forEach(doc => {
       const data = doc.data();
       // If search is provided, filter results client-side
-      if (!search || data.phoneNumber.includes(search) || data.email.includes(search)) {
+      if (!search || 
+          data.phoneNumber.includes(search) || 
+          (data.emails && data.emails.some(email => email.includes(search))) ||
+          (data.email && data.email.includes(search))) {
         results.push(data);
       }
     });
@@ -228,7 +231,7 @@ async function getMappingByPhone(phoneNumber, headers) {
   }
 }
 
-// Save one or more mappings
+// Save one or more mappings - UPDATED TO HANDLE MULTIPLE EMAILS PER PHONE
 async function saveMappings(event, headers) {
   try {
     console.log('Saving mappings...');
@@ -268,26 +271,63 @@ async function saveMappings(event, headers) {
       }
     }
     
-    // Save mappings in batch
-    const batch = db.batch();
-    const mappingsCollection = db.collection('phoneEmailMappings');
-    
+    // Group mappings by phone number to handle multiple emails
+    const phoneToEmails = {};
     for (const mapping of mappings) {
-      const docRef = mappingsCollection.doc(mapping.phoneNumber);
+      if (!phoneToEmails[mapping.phoneNumber]) {
+        phoneToEmails[mapping.phoneNumber] = [];
+      }
+      phoneToEmails[mapping.phoneNumber].push(mapping.email);
+    }
+    
+    // Save mappings with multiple email support
+    const mappingsCollection = db.collection('phoneEmailMappings');
+    const batch = db.batch();
+    
+    for (const [phoneNumber, emails] of Object.entries(phoneToEmails)) {
+      const docRef = mappingsCollection.doc(phoneNumber);
+      
+      // Check if document already exists
+      const existingDoc = await docRef.get();
+      let finalEmails = emails;
+      
+      if (existingDoc.exists) {
+        const existingData = existingDoc.data();
+        let existingEmails = [];
+        
+        // Handle both old format (single email) and new format (array of emails)
+        if (existingData.emails && Array.isArray(existingData.emails)) {
+          existingEmails = existingData.emails;
+        } else if (existingData.email) {
+          existingEmails = [existingData.email];
+        }
+        
+        // Merge emails, removing duplicates
+        const allEmails = [...existingEmails, ...emails];
+        finalEmails = [...new Set(allEmails)]; // Remove duplicates
+        console.log(`Merging emails for ${phoneNumber}: ${finalEmails.join(', ')}`);
+      }
+      
       batch.set(docRef, {
-        email: mapping.email,
-        phoneNumber: mapping.phoneNumber,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        emails: finalEmails, // Store as array of emails
+        phoneNumber: phoneNumber,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        // Keep legacy email field for backward compatibility (first email)
+        email: finalEmails[0]
       });
     }
     
     await batch.commit();
-    console.log(`Successfully saved ${mappings.length} mappings`);
+    console.log(`Successfully saved mappings for ${Object.keys(phoneToEmails).length} phone numbers`);
     
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ success: true, count: mappings.length })
+      body: JSON.stringify({ 
+        success: true, 
+        phoneNumbers: Object.keys(phoneToEmails).length,
+        totalEmails: mappings.length 
+      })
     };
   } catch (error) {
     console.error('Error saving mappings:', error);
@@ -330,7 +370,7 @@ async function deleteMapping(phoneNumber, headers) {
   }
 }
 
-// Lookup email by phone number (for webhook handler)
+// FIXED: Lookup ALL emails by phone number (for webhook handler)
 async function lookupEmailByPhone(event, headers) {
   try {
     const { phoneNumber } = JSON.parse(event.body);
@@ -353,7 +393,7 @@ async function lookupEmailByPhone(event, headers) {
       };
     }
     
-    console.log(`Looking up email for phone: ${formattedPhone}`);
+    console.log(`Looking up emails for phone: ${formattedPhone}`);
     
     const mappingsCollection = db.collection('phoneEmailMappings');
     const doc = await mappingsCollection.doc(formattedPhone).get();
@@ -366,18 +406,34 @@ async function lookupEmailByPhone(event, headers) {
       };
     }
     
+    const data = doc.data();
+    let emails = [];
+    
+    // Handle both new format (emails array) and old format (single email)
+    if (data.emails && Array.isArray(data.emails)) {
+      emails = data.emails;
+    } else if (data.email) {
+      emails = [data.email];
+    }
+    
+    console.log(`Found ${emails.length} emails for phone ${formattedPhone}: ${emails.join(', ')}`);
+    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ email: doc.data().email })
+      body: JSON.stringify({ 
+        emails: emails,           // Return ALL emails as array
+        email: emails[0],         // Keep legacy single email field for backward compatibility
+        count: emails.length      // Number of emails found
+      })
     };
   } catch (error) {
-    console.error('Error looking up email by phone:', error);
+    console.error('Error looking up emails by phone:', error);
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ 
-        error: 'Failed to lookup email', 
+        error: 'Failed to lookup emails', 
         message: error.message,
         code: error.code
       })
