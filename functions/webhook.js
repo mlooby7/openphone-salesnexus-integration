@@ -2,11 +2,11 @@
 
 // Direct mappings for critical numbers - Add your most important contacts here
 const DIRECT_MAPPINGS = {
-  '+18884640727': 'capitalone@example.com', // Capital One
-  '+12819412710': 'mashaimw@osbprovider.com', // Maya - FIXED EMAIL ADDRESS
-  '+19513958599': 'maurice@example.com', // Maurice Miles
-  '+13127802300': 'pj@targetron.com', // PJ Entrepreneur
-  '+17138620001': 'support@salesnexus.com' // SalesNexus Support
+  '+18884640727': ['capitalone@example.com'], // Capital One - Now supports multiple emails
+  '+12819412710': ['mashaimw@osbprovider.com'], // Maya - FIXED EMAIL ADDRESS
+  '+19513958599': ['maurice@example.com'], // Maurice Miles
+  '+13127802300': ['pj@targetron.com'], // PJ Entrepreneur
+  '+17138620001': ['support@salesnexus.com'] // SalesNexus Support
 };
 
 // Direct mappings to contact IDs
@@ -240,38 +240,38 @@ exports.handler = async function(event, context) {
         try {
           // First check direct mappings
           if (DIRECT_MAPPINGS[lookupNumber]) {
-            const email = DIRECT_MAPPINGS[lookupNumber];
-            console.log(`Found email in direct mappings: ${email}`);
+            const emails = DIRECT_MAPPINGS[lookupNumber];
+            console.log(`Found emails in direct mappings: ${emails.join(', ')} for phone: ${lookupNumber}`);
             
-            // Find contact by email in SalesNexus
-            const foundContactId = await findContactByEmail(email);
+            // Try each email until we find a contact
+            const foundContactId = await findContactByEmails(emails);
             
             if (foundContactId) {
               contactId = foundContactId;
-              console.log(`Found contact by email: ${contactId}`);
+              console.log(`Found contact by direct mapping emails: ${contactId}`);
             } else {
-              console.log(`No contact found for email: ${email}, using fallback`);
+              console.log(`No contact found for direct mapping emails: ${emails.join(', ')}, using fallback`);
             }
           } else {
             // Try the lookup function
             try {
               // INCREASED TIMEOUT: Adding a timeout of 5 seconds to give more time
-              const email = await lookupEmailWithTimeout(lookupNumber, 5000);
+              const emails = await lookupEmailsWithTimeout(lookupNumber, 5000);
               
-              if (email) {
-                console.log(`Found email mapping: ${email} for phone: ${lookupNumber}`);
+              if (emails && emails.length > 0) {
+                console.log(`Found email mappings: ${emails.join(', ')} for phone: ${lookupNumber}`);
                 
-                // Now find the contact by email in SalesNexus
-                const foundContactId = await findContactByEmail(email);
+                // Now find the contact by trying each email in SalesNexus
+                const foundContactId = await findContactByEmails(emails);
                 
                 if (foundContactId) {
                   contactId = foundContactId;
-                  console.log(`Found contact by email: ${contactId}`);
+                  console.log(`Found contact by lookup emails: ${contactId}`);
                 } else {
-                  console.log(`No contact found for email: ${email}, using fallback`);
+                  console.log(`No contact found for emails: ${emails.join(', ')}, using fallback`);
                 }
               } else {
-                console.log(`No email mapping found for: ${lookupNumber}, using fallback`);
+                console.log(`No email mappings found for: ${lookupNumber}, using fallback`);
               }
             } catch (error) {
               console.error("Error looking up contact:", error);
@@ -315,48 +315,48 @@ exports.handler = async function(event, context) {
   }
 };
 
-// Lookup email with a timeout - UPDATED WITH CONFIGURABLE TIMEOUT
-async function lookupEmailWithTimeout(phoneNumber, timeoutMs = 5000) {
+// NEW: Lookup emails with a timeout - UPDATED TO HANDLE MULTIPLE EMAILS
+async function lookupEmailsWithTimeout(phoneNumber, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const timeoutId = setTimeout(() => {
       console.log(`Lookup timed out for ${phoneNumber} after ${timeoutMs}ms`);
-      resolve(null);
+      resolve([]);
     }, timeoutMs);
     
-    lookupEmailByPhoneNumber(phoneNumber, timeoutMs - 500)
-      .then(email => {
+    lookupEmailsByPhoneNumber(phoneNumber, timeoutMs - 500)
+      .then(emails => {
         clearTimeout(timeoutId);
-        resolve(email);
+        resolve(emails || []);
       })
       .catch(error => {
         console.error("Error in email lookup:", error);
         clearTimeout(timeoutId);
-        resolve(null);
+        resolve([]);
       });
   });
 }
 
-// Lookup email by phone number - UPDATED WITH CONFIGURABLE TIMEOUT
-async function lookupEmailByPhoneNumber(phoneNumber, timeoutMs = 4500) {
+// NEW: Lookup emails by phone number - UPDATED TO HANDLE MULTIPLE EMAILS
+async function lookupEmailsByPhoneNumber(phoneNumber, timeoutMs = 4500) {
   try {
     // Format the phone number
     const formattedPhone = formatPhoneNumber(phoneNumber);
     
     if (!formattedPhone) {
       console.log("Invalid phone number format:", phoneNumber);
-      return null;
+      return [];
     }
     
     // Check direct mappings first
     if (DIRECT_MAPPINGS[formattedPhone]) {
-      console.log(`Found email in direct mappings: ${DIRECT_MAPPINGS[formattedPhone]}`);
+      console.log(`Found emails in direct mappings: ${DIRECT_MAPPINGS[formattedPhone].join(', ')}`);
       return DIRECT_MAPPINGS[formattedPhone];
     }
     
-    // Call our mapping function to get the email
+    // Call our mapping function to get the emails
     try {
       const siteUrl = process.env.SITE_URL || 'https://sweet-liger-902232.netlify.app';
-      console.log(`Looking up email at: ${siteUrl}/.netlify/functions/mapping/lookup`);
+      console.log(`Looking up emails at: ${siteUrl}/.netlify/functions/mapping/lookup`);
       
       // Increased timeout for the fetch request
       const controller = new AbortController();
@@ -373,22 +373,25 @@ async function lookupEmailByPhoneNumber(phoneNumber, timeoutMs = 4500) {
       
       if (!response.ok) {
         if (response.status === 404) {
-          console.log(`No email mapping found for phone: ${formattedPhone}`);
-          return null;
+          console.log(`No email mappings found for phone: ${formattedPhone}`);
+          return [];
         }
-        throw new Error(`Error looking up email: ${response.statusText}`);
+        throw new Error(`Error looking up emails: ${response.statusText}`);
       }
       
       const data = await response.json();
-      return data.email;
+      
+      // Handle both old and new response formats
+      const emails = data.emails || (data.email ? [data.email] : []);
+      return emails.filter(email => email && email.trim()); // Remove empty emails
     } catch (error) {
       console.error("Error with mapping function:", error);
-      // If API call fails, we return null and use fallback contact
-      return null;
+      // If API call fails, we return empty array and use fallback contact
+      return [];
     }
   } catch (error) {
-    console.error("Error looking up email:", error);
-    return null;
+    console.error("Error looking up emails:", error);
+    return [];
   }
 }
 
@@ -412,7 +415,30 @@ function formatPhoneNumber(phone) {
   return '+' + digits;
 }
 
-// Find a contact in SalesNexus by email
+// NEW: Find a contact in SalesNexus by trying multiple emails
+async function findContactByEmails(emails) {
+  if (!emails || emails.length === 0) {
+    console.log("No emails provided");
+    return null;
+  }
+  
+  // Try each email until we find a contact
+  for (const email of emails) {
+    if (email && email.trim()) {
+      console.log(`Trying to find contact with email: ${email.trim()}`);
+      const contactId = await findContactByEmail(email.trim());
+      if (contactId) {
+        console.log(`Found contact with email ${email.trim()}: ${contactId}`);
+        return contactId;
+      }
+    }
+  }
+  
+  console.log(`No contact found for any of the emails: ${emails.join(', ')}`);
+  return null;
+}
+
+// Find a contact in SalesNexus by email - IMPROVED ERROR HANDLING
 async function findContactByEmail(email) {
   try {
     if (!email) {
@@ -454,27 +480,27 @@ async function findContactByEmail(email) {
       
       // Check if we have contact IDs
       if (contactList["contact-ids"] && contactList["contact-ids"].length > 0) {
-        console.log(`Found ${contactList["contact-ids"].length} matching contacts`);
+        console.log(`Found ${contactList["contact-ids"].length} matching contacts for email: ${email}`);
         // Return the ID of the first matching contact
         return contactList["contact-ids"][0];
       }
       
       // Try another way to extract contact IDs
       if (contactList["total-record-count"] && parseInt(contactList["total-record-count"]) > 0) {
-        console.log(`Found ${contactList["total-record-count"]} matching contacts`);
+        console.log(`Found ${contactList["total-record-count"]} matching contacts for email: ${email}`);
         // Find the first contact ID
         const contactIds = Object.keys(contactList["contact-info"] || {});
         if (contactIds.length > 0) {
-          console.log(`Using first contact ID: ${contactIds[0]}`);
+          console.log(`Using first contact ID for email ${email}: ${contactIds[0]}`);
           return contactIds[0];
         }
       }
     }
     
-    console.log("No matching contacts found");
+    console.log(`No matching contacts found for email: ${email}`);
     return null;
   } catch (error) {
-    console.error("Error searching for contact:", error);
+    console.error(`Error searching for contact with email ${email}:`, error);
     return null;
   }
 }
